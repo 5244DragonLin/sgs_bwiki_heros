@@ -78,10 +78,10 @@ output/
 
 ```bash
 # Gitee 镜像（国内访问快）
-git clone https://gitee.com/yhl5244/sys_bwiki_heros
+git clone https://gitee.com/yhl5244/sgs_bwiki_heros
 
 # GitHub 原仓库
-git clone https://github.com/5244DragonLin/sys_bwiki_heros
+git clone https://github.com/5244DragonLin/sgs_bwiki_heros
 
 cd sgs_bwiki_heros
 ```
@@ -96,19 +96,19 @@ pip install -r requirements.txt
 
 ```bash
 # 爬取所有武将（约需 10-20 分钟）
-python sys_bwiki_heros.py
+python sgs_bwiki_heros.py
 
 # 爬取蜀势力武将，限制 10 个，每 5 个自动保存
-python sys_bwiki_heros.py --faction 蜀 --limit 10 --auto-save 5
+python sgs_bwiki_heros.py --faction 蜀 --limit 10 --auto-save 5
 
 # 从已有数据中筛选（不重新爬取）
-python sys_bwiki_heros.py --query --faction 魏 --limit 5
+python sgs_bwiki_heros.py --query --faction 魏 --limit 5
 ```
 
 ## ⌨️CLI 模式
 
 ```
-python sys_bwiki_heros.py [-o OUTPUT] [--pack PACK] [--faction FACTION]
+python sgs_bwiki_heros.py [-o OUTPUT] [--pack PACK] [--faction FACTION]
                       [--limit LIMIT] [--auto-save N] [--no-skip] [--query]
                       [--version VER]
 ```
@@ -141,13 +141,12 @@ python sys_bwiki_heros.py [-o OUTPUT] [--pack PACK] [--faction FACTION]
 
 ```text
 sgs_bwiki_heros/
-├── sgs_scraper.py        # 主爬虫脚本
+├── sgs_bwiki_heros.py    # 主爬虫脚本
 ├── requirements.txt      # Python 依赖
 ├── LICENSE               # MIT 许可证
 ├── README.md             # 本文件
 ├── output/               # 爬取结果
 │   ├── characters.json
-│   ├── characters.csv
 │   └── pack_character_map.json  # 武将包与武将的映射（含图标路径）
 ```
 
@@ -157,8 +156,8 @@ sgs_bwiki_heros/
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| 请求间隔 | 0.8s | 每次 HTTP 请求后的等待时间 |
-| 最大重试 | 3 次 | 单个页面请求失败后的重试次数 |
+| 请求间隔 | 2.0s | 每次 HTTP 请求后的等待时间（含随机抖动） |
+| 最大重试 | 5 次 | 单个页面请求失败后的重试次数（567 频率限制最多等 25s） |
 | 自动保存 | 每 20 个 | 每爬取 N 个武将自动写入磁盘 |
 | 输出目录 | `output/` | 结果文件和 checkpoint 存放目录 |
 
@@ -166,7 +165,7 @@ sgs_bwiki_heros/
 
 **爬取过程中被频率限制了怎么办？**
 
-脚本内置 0.8s 请求间隔和 3 次自动重试。如果仍被限制，可增大 `REQUEST_DELAY` 变量（脚本顶部）。
+脚本内置 2.0s 请求间隔和 5 次自动重试。如果仍被限制，可增大 `REQUEST_DELAY` 变量（脚本顶部）。
 
 **中断后如何继续？**
 
@@ -175,7 +174,7 @@ sgs_bwiki_heros/
 
 **爬取后还想重新筛选怎么办？**
 
-用 `--query` 模式：`python sys_bwiki_heros.py --query --faction 魏`。不需要重新请求网络。
+用 `--query` 模式：`python sgs_bwiki_heros.py --query --faction 魏`。不需要重新请求网络。
 
 ## 🤝贡献
 

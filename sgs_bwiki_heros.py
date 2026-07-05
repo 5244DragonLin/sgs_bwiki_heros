@@ -19,7 +19,7 @@
   5. 输出格式：JSON（结构化） + CSV（平铺表格）
 
 用法：
-  python sys_bwiki_heros.py [--pack 标准-蜀汉虎将] [--faction 蜀] [--limit 10] [--auto-save 20]
+  python sgs_bwiki_heros.py [--pack 标准-蜀汉虎将] [--faction 蜀] [--limit 10] [--auto-save 20]
 """
 
 import os
@@ -56,7 +56,7 @@ HEADERS = {
         "Chrome/120.0.0.0 Safari/537.36"
     )
 }
-REQUEST_DELAY = 3.0          # 请求间隔（秒）
+REQUEST_DELAY = 2.0          # 请求间隔（秒）
 MAX_RETRIES = 5              # 单个页面最大重试次数
 SAVE_EVERY_N = 20            # 每爬取多少个武将自动保存
 
@@ -943,25 +943,25 @@ def main():
         epilog="""
 示例:
   # 爬取所有武将
-  python sys_bwiki_heros.py
+  python sgs_bwiki_heros.py
 
   # 爬取蜀势力武将，限制10个
-  python sys_bwiki_heros.py --faction 蜀 --limit 10
+  python sgs_bwiki_heros.py --faction 蜀 --limit 10
 
   # 按武将包筛选
-  python sys_bwiki_heros.py --pack 标准
+  python sgs_bwiki_heros.py --pack 标准
 
   # 每爬取5个自动保存一次
-  python sys_bwiki_heros.py --auto-save 5
+  python sgs_bwiki_heros.py --auto-save 5
 
   # 不跳过已有武将（强制重新爬取）
-  python sys_bwiki_heros.py --no-skip
+  python sgs_bwiki_heros.py --no-skip
 
   # 从已有数据中筛选（不重新爬取）
-  python sys_bwiki_heros.py --query --faction 魏 --limit 5
+  python sgs_bwiki_heros.py --query --faction 魏 --limit 5
 
   # 输出到指定目录
-  python sys_bwiki_heros.py -o D:/sgs_data
+  python sgs_bwiki_heros.py -o D:/sgs_data
         """,
     )
 
