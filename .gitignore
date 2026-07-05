@@ -1,0 +1,23 @@
+# Byte-compiled
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Checkpoint / cache
+output/checkpoint.json
+
+# Environment
+.venv/
+env/
+venv/
+.workbuddy/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
