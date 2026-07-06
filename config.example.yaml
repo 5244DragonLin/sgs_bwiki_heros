@@ -1,0 +1,46 @@
+# ============================================================
+# sgs_bwiki_heros - 三国杀 Bwiki 武将信息爬虫 配置文件
+# ============================================================
+# 使用方法：复制为 config.yaml，脚本启动时自动加载
+#   cp config.example.yaml config.yaml
+#   python sgs_bwiki_heros.py
+# 命令行参数（如 --pack、--faction 等）优先级高于本配置文件。
+# ============================================================
+
+# ---------- 网络请求配置 ----------
+request:
+  # bilibili 三国杀 WIKI 基础地址
+  base_url: "https://wiki.biligame.com/sgs"
+  # 请求间隔（秒），含随机抖动，建议不低于 1.5s
+  delay: 2.0
+  # 单个页面最大重试次数（567 频率限制时指数退避等待）
+  max_retries: 5
+  # 请求超时时间（秒）
+  timeout: 30
+
+# ---------- 请求头配置 ----------
+headers:
+  user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+# ---------- 输出配置 ----------
+output:
+  # 输出目录（相对于脚本所在目录）
+  dir: "output"
+  # 每爬取多少个武将自动保存一次
+  save_every_n: 20
+
+# ---------- 爬取筛选配置（默认爬取全部）----------
+filters:
+  # 武将包筛选，逗号分隔。如: "标准-蜀汉虎将,神话再临-风"
+  pack: ""
+  # 势力筛选，逗号分隔。如: "蜀,魏,吴,群,神"
+  faction: ""
+  # 数量限制，0 表示不限制
+  limit: 0
+
+# ---------- 增量爬取配置 ----------
+incremental:
+  # 是否启用增量模式（跳过已爬取且未变化的武将）
+  enabled: true
+  # checkpoint 文件路径（记录已爬取武将及页面 hash）
+  checkpoint_file: "output/checkpoint.json"

@@ -105,6 +105,29 @@ python sgs_bwiki_heros.py --faction 蜀 --limit 10 --auto-save 5
 python sgs_bwiki_heros.py --query --faction 魏 --limit 5
 ```
 
+### 4. 配置文件（可选）
+
+复制示例配置并按需修改，命令行参数优先级更高：
+
+```bash
+cp config.example.yaml config.yaml
+# 编辑 config.yaml 修改请求间隔、输出目录等
+python sgs_bwiki_heros.py
+```
+
+`config.example.yaml` 中可配置项：
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `request.base_url` | Bwiki 基础地址 | `wiki.biligame.com/sgs` |
+| `request.delay` | 请求间隔（秒） | `2.0` |
+| `request.max_retries` | 最大重试次数 | `5` |
+| `output.dir` | 输出目录 | `output/` |
+| `output.save_every_n` | 每 N 个武将自动保存 | `20` |
+| `filters.pack` | 武将包筛选 | 空（全部） |
+| `filters.faction` | 势力筛选 | 空（全部） |
+| `filters.limit` | 数量限制（0=不限制） | `0` |
+
 ## ⌨️CLI 模式
 
 ```
@@ -143,6 +166,7 @@ python sgs_bwiki_heros.py [-o OUTPUT] [--pack PACK] [--faction FACTION]
 sgs_bwiki_heros/
 ├── sgs_bwiki_heros.py    # 主爬虫脚本
 ├── requirements.txt      # Python 依赖
+├── config.example.yaml   # 示例配置文件（可选，复制为 config.yaml 使用）
 ├── LICENSE               # MIT 许可证
 ├── README.md             # 本文件
 ├── output/               # 爬取结果
@@ -152,7 +176,7 @@ sgs_bwiki_heros/
 
 ## 配置说明
 
-爬虫内置的默认参数：
+爬虫内置的默认参数（也可通过 `config.example.yaml` 统一管理，详见上方"### 4. 配置文件"）：
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
@@ -199,3 +223,5 @@ sgs_bwiki_heros/
 ## 📃许可证
 
 本项目采用 MIT 许可证。详见 [LICENSE](./LICENSE) 文件。
+
+
