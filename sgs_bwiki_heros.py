@@ -30,6 +30,7 @@ import time
 import hashlib
 import argparse
 import random
+import yaml
 from datetime import datetime
 from typing import Optional
 
@@ -936,7 +937,59 @@ def crawl(
 # ============ 命令行入口 ============
 
 
+def load_config(config_path: str = "config.yaml") -> dict:
+    """从 YAML 配置文件加载配置并扁平化为 argparse 参数字典。
+
+    优先级: config.yaml > config.example.yaml > 空字典
+    """
+    import os as _os
+
+    for path in (config_path, _os.path.splitext(config_path)[0] + ".example.yaml",
+                  "config.example.yaml"):
+        if _os.path.exists(path):
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    data = yaml.safe_load(f) or {}
+                return _flatten_config(data)
+            except Exception:
+                continue
+    return {}
+
+
+def _flatten_config(data: dict) -> dict:
+    """将嵌套的 YAML 配置扁平化为 argparse 参数名。"""
+    flat = {}
+
+    output = data.get("output", {})
+    if isinstance(output, dict):
+        if output.get("dir"):
+            flat["output"] = output["dir"]
+        if output.get("save_every_n") is not None:
+            flat["auto_save"] = output["save_every_n"]
+
+    filters = data.get("filters", {})
+    if isinstance(filters, dict):
+        if filters.get("pack"):
+            flat["pack"] = filters["pack"]
+        if filters.get("faction"):
+            flat["faction"] = filters["faction"]
+        if filters.get("limit") and filters["limit"] > 0:
+            flat["limit"] = filters["limit"]
+
+    incremental = data.get("incremental", {})
+    if isinstance(incremental, dict) and "enabled" in incremental:
+        if not incremental["enabled"]:
+            flat["no_skip"] = True
+
+    return flat
+
+
 def main():
+    pre_parser = argparse.ArgumentParser(add_help=False)
+    pre_parser.add_argument("--yaml", "-y", default="config.yaml")
+    pre_args, _ = pre_parser.parse_known_args()
+    yaml_defaults = load_config(pre_args.yaml)
+
     parser = argparse.ArgumentParser(
         description="三国杀武将信息爬虫",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -965,6 +1018,11 @@ def main():
         """,
     )
 
+    parser.add_argument(
+        "--yaml", "-y",
+        default="config.yaml",
+        help="YAML 配置文件路径（CLI 参数优先级高于配置文件）",
+    )
     parser.add_argument(
         "-o",
         "--output",
@@ -1005,6 +1063,8 @@ def main():
     parser.add_argument(
         "--version", type=str, default=None, help="按武将版本筛选（classic/breakthrough/national_war）"
     )
+    if yaml_defaults:
+        parser.set_defaults(**yaml_defaults)
 
     args = parser.parse_args()
 
