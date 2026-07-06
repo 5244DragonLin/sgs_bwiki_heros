@@ -984,10 +984,10 @@ def _flatten_config(data: dict) -> dict:
     return flat
 
 
-def main():
+def main(argv=None):
     pre_parser = argparse.ArgumentParser(add_help=False)
     pre_parser.add_argument("--yaml", "-y", default="config.yaml")
-    pre_args, _ = pre_parser.parse_known_args()
+    pre_args, _ = pre_parser.parse_known_args(argv)
     yaml_defaults = load_config(pre_args.yaml)
 
     parser = argparse.ArgumentParser(
@@ -1066,7 +1066,7 @@ def main():
     if yaml_defaults:
         parser.set_defaults(**yaml_defaults)
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     # 处理输出目录
     global OUTPUT_DIR
