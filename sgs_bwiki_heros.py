@@ -941,6 +941,7 @@ def load_config(config_path: str = "config.yaml") -> dict:
     """从 YAML 配置文件加载配置并扁平化为 argparse 参数字典。
 
     优先级: config.yaml > config.example.yaml > 空字典
+    自动处理 Windows 路径反斜杠在 YAML 中的转义问题。
     """
     import os as _os
 
@@ -949,7 +950,12 @@ def load_config(config_path: str = "config.yaml") -> dict:
         if _os.path.exists(path):
             try:
                 with open(path, 'r', encoding='utf-8') as f:
-                    data = yaml.safe_load(f) or {}
+                    raw = f.read()
+                try:
+                    data = yaml.safe_load(raw) or {}
+                except yaml.YAMLError:
+                    fixed = raw.replace("\\", "/")
+                    data = yaml.safe_load(fixed) or {}
                 return _flatten_config(data)
             except Exception:
                 continue
