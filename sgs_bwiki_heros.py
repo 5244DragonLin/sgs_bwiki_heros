@@ -55,10 +55,28 @@ HEADERS = {
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/120.0.0.0 Safari/537.36"
-    )
+    ),
+    # 补全浏览器常规头，避免只带 UA 被反爬识别为脚本
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;q=0.9,"
+        "image/avif,image/webp,*/*;q=0.8"
+    ),
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Accept-Encoding": "gzip, deflate",
+    "Connection": "keep-alive",
+    # 模拟从图鉴页点进武将详情，进一步贴近真实浏览器
+    "Referer": INDEX_URL,
 }
-REQUEST_DELAY = 2.0          # 请求间隔（秒）
+# 复用会话：自动保持 cookie / 复用 TCP 连接，使请求像同一浏览器，
+# 降低被频率限制(567)的概率
+SESSION = requests.Session()
+SESSION.headers.update(HEADERS)
+
+# 实际请求间隔 = DELAY_BASE + random.uniform(0, DELAY_JITTER)，二者均可在 config.yaml 设置
+DELAY_BASE = 1.0             # 基础请求间隔（秒）
+DELAY_JITTER = 2.0          # 随机抖动上限（秒）
 MAX_RETRIES = 5              # 单个页面最大重试次数
+REQUEST_TIMEOUT = 30        # 请求超时（秒）
 SAVE_EVERY_N = 20            # 每爬取多少个武将自动保存
 
 # 输出目录（可通过 -o 参数修改）
@@ -88,11 +106,16 @@ def compute_page_hash(html: str) -> str:
     return hashlib.md5(html.encode("utf-8")).hexdigest()
 
 
-def fetch_page(url: str, retries: int = MAX_RETRIES) -> Optional[str]:
-    """带重试的页面获取（指数退避 + 567 特殊处理）"""
+def fetch_page(url: str, retries: int = None) -> Optional[str]:
+    """带重试的页面获取（指数退避 + 567 特殊处理）
+
+    使用全局 SESSION（保持 cookie 与连接），请求头见 HEADERS。
+    """
+    if retries is None:
+        retries = MAX_RETRIES
     for attempt in range(retries):
         try:
-            r = requests.get(url, headers=HEADERS, timeout=30)
+            r = SESSION.get(url, timeout=REQUEST_TIMEOUT)
             r.encoding = "utf-8"
             if r.status_code == 200:
                 return r.text
@@ -104,7 +127,8 @@ def fetch_page(url: str, retries: int = MAX_RETRIES) -> Optional[str]:
             print(f"  [WARN] HTTP {r.status_code} for {url}, retry {attempt + 1}")
         except requests.RequestException as e:
             print(f"  [WARN] Request failed: {e}, retry {attempt + 1}")
-        time.sleep(REQUEST_DELAY * (2 ** attempt))  # 指数退避
+        # 指数退避（基数含随机抖动，避免机械节奏）
+        time.sleep((DELAY_BASE + random.uniform(0, DELAY_JITTER)) * (2 ** attempt))
     return None
 
 
@@ -440,7 +464,6 @@ def save_json(characters: list[dict], filepath: str):
     }
     with open(filepath, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
-    print(f"[+] JSON 已保存: {filepath} ({len(characters)} 个武将)")
 
 
 # ============ 增量爬取管理 ============
@@ -473,7 +496,6 @@ def save_checkpoint(characters: list[dict]):
     }
     with open(checkpoint_path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
-    print(f"[+] 检查点已保存 ({len(characters)} 个武将)")
 
 
 def needs_update(
@@ -899,7 +921,7 @@ def crawl(
             save_checkpoint(characters)
             save_json(characters, os.path.join(OUTPUT_DIR, "characters.json"))
 
-        time.sleep(REQUEST_DELAY + random.uniform(0, 1.5))  # 加随机抖动
+        time.sleep(DELAY_BASE + random.uniform(0, DELAY_JITTER))  # 加随机抖动
 
     if use_tqdm:
         iterator.close()
@@ -987,10 +1009,23 @@ def _flatten_config(data: dict) -> dict:
         if not incremental["enabled"]:
             flat["no_skip"] = True
 
+    # 网络请求参数（使 config.yaml 中的 request.* 真正生效）
+    request = data.get("request", {})
+    if isinstance(request, dict):
+        if request.get("delay") is not None:
+            flat["delay"] = request["delay"]
+        if request.get("delay_jitter") is not None:
+            flat["delay_jitter"] = request["delay_jitter"]
+        if request.get("max_retries") is not None:
+            flat["max_retries"] = request["max_retries"]
+        if request.get("timeout") is not None:
+            flat["timeout"] = request["timeout"]
+
     return flat
 
 
 def main(argv=None):
+    global DELAY_BASE, DELAY_JITTER, MAX_RETRIES, REQUEST_TIMEOUT, OUTPUT_DIR
     pre_parser = argparse.ArgumentParser(add_help=False)
     pre_parser.add_argument("--yaml", "-y", default="config.yaml")
     pre_args, _ = pre_parser.parse_known_args(argv)
@@ -1069,10 +1104,32 @@ def main(argv=None):
     parser.add_argument(
         "--version", type=str, default=None, help="按武将版本筛选（classic/breakthrough/national_war）"
     )
+    parser.add_argument(
+        "--delay", type=float, default=DELAY_BASE,
+        help=f"基础请求间隔（秒），实际间隔 = delay + random.uniform(0, delay_jitter)（默认 {DELAY_BASE}）",
+    )
+    parser.add_argument(
+        "--delay-jitter", type=float, default=DELAY_JITTER,
+        help=f"随机抖动上限（秒）（默认 {DELAY_JITTER}）",
+    )
+    parser.add_argument(
+        "--max-retries", type=int, default=MAX_RETRIES,
+        help=f"单个页面最大重试次数（默认 {MAX_RETRIES}）",
+    )
+    parser.add_argument(
+        "--timeout", type=int, default=REQUEST_TIMEOUT,
+        help=f"请求超时（秒）（默认 {REQUEST_TIMEOUT}）",
+    )
     if yaml_defaults:
         parser.set_defaults(**yaml_defaults)
 
     args = parser.parse_args(argv)
+
+    # 将配置/CLI 中的网络参数同步到全局变量，供 fetch_page / crawl 使用
+    DELAY_BASE = args.delay
+    DELAY_JITTER = args.delay_jitter
+    MAX_RETRIES = args.max_retries
+    REQUEST_TIMEOUT = args.timeout
 
     # 处理输出目录
     global OUTPUT_DIR

@@ -120,8 +120,10 @@ python sgs_bwiki_heros.py
 | 配置项 | 说明 | 默认值 |
 |--------|------|--------|
 | `request.base_url` | Bwiki 基础地址 | `wiki.biligame.com/sgs` |
-| `request.delay` | 请求间隔（秒） | `2.0` |
+| `request.delay` | 基础请求间隔（秒） | `1.0` |
+| `request.delay_jitter` | 随机抖动上限（秒），实际间隔 = delay + random.uniform(0, delay_jitter) | `2.0` |
 | `request.max_retries` | 最大重试次数 | `5` |
+| `request.timeout` | 请求超时时间（秒） | `30` |
 | `output.dir` | 输出目录 | `output/` |
 | `output.save_every_n` | 每 N 个武将自动保存 | `20` |
 | `filters.pack` | 武将包筛选 | 空（全部） |
@@ -133,7 +135,8 @@ python sgs_bwiki_heros.py
 ```
 python sgs_bwiki_heros.py [-o OUTPUT] [--pack PACK] [--faction FACTION]
                       [--limit LIMIT] [--auto-save N] [--no-skip] [--query]
-                      [--version VER]
+                      [--version VER] [--delay SEC] [--delay-jitter SEC]
+                      [--max-retries N] [--timeout SEC]
 ```
 
 ### 筛选选项
@@ -153,6 +156,15 @@ python sgs_bwiki_heros.py [-o OUTPUT] [--pack PACK] [--faction FACTION]
 | `--auto-save N` | 每 N 个武将自动保存一次 | 20 |
 | `--no-skip` | 不跳过已爬取的武将（强制重新爬取） | 跳过 |
 | `--no-resume` | 不从检查点恢复 | 恢复 |
+
+### 网络参数
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `--delay SEC` | 基础请求间隔（秒） | `1.0` |
+| `--delay-jitter SEC` | 随机抖动上限（秒），实际间隔 = delay + random.uniform(0, jitter) | `2.0` |
+| `--max-retries N` | 单个页面最大重试次数 | `5` |
+| `--timeout SEC` | 请求超时时间（秒） | `30` |
 
 ### 查询模式
 
@@ -180,8 +192,9 @@ sgs_bwiki_heros/
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| 请求间隔 | 2.0s | 每次 HTTP 请求后的等待时间（含随机抖动） |
-| 最大重试 | 5 次 | 单个页面请求失败后的重试次数（567 频率限制最多等 25s） |
+| 请求间隔 | 1.0s + 随机抖动 0~2.0s | 每次 HTTP 请求后的等待时间（delay + random.uniform(0, delay_jitter)） |
+| 最大重试 | 5 次 | 单个页面请求失败后的重试次数（567 频率限制指数退避等待） |
+| 请求超时 | 30s | 单次 HTTP 请求超时时间 |
 | 自动保存 | 每 20 个 | 每爬取 N 个武将自动写入磁盘 |
 | 输出目录 | `output/` | 结果文件和 checkpoint 存放目录 |
 
@@ -189,7 +202,7 @@ sgs_bwiki_heros/
 
 **爬取过程中被频率限制了怎么办？**
 
-脚本内置 2.0s 请求间隔和 5 次自动重试。如果仍被限制，可增大 `REQUEST_DELAY` 变量（脚本顶部）。
+脚本内置 1.0s 基础间隔 + 0~2.0s 随机抖动，以及 5 次自动重试（567 频率限制时指数退避等待）。如仍被限制，可在 `config.yaml` 调大 `request.delay` / `request.delay_jitter`，或用 `--delay` / `--delay-jitter` 命令行参数临时调整。
 
 **中断后如何继续？**
 
@@ -212,6 +225,13 @@ sgs_bwiki_heros/
 
 ## 📋更新日志
 
+### v1.1
+
+- 修复 bwiki 频率限制（HTTP 567）被快速拦截的问题：补全请求头（Referer / Accept / Accept-Language 等），并改用 `requests.Session` 保持会话与 cookie，使请求更接近真实浏览器
+- 新增请求间隔随机抖动：实际间隔 = `request.delay` + `random.uniform(0, request.delay_jitter)`，默认 `1.0 + 0~2.0` 秒，打破机械节奏，进一步降低被识别概率
+- 网络参数（delay / delay_jitter / max_retries / timeout）现可通过 `config.yaml` 或命令行参数（`--delay` / `--delay-jitter` / `--max-retries` / `--timeout`）配置；先前这些字段虽写在配置文件中但未被代码读取，本次一并修复
+- 同步更新 README 配置说明、CLI 参数表与 FAQ
+
 ### v1.0
 
 - 首次发布
@@ -219,6 +239,14 @@ sgs_bwiki_heros/
 ## ⚠️免责声明
 
 本工具仅供学习交流使用，数据来源为 bilibili 三国杀 WIKI 公开页面。使用者应遵守目标网站的 robots.txt 及相关使用条款。因使用本工具产生的一切后果由使用者自行承担。
+
+## ☕捐赠
+
+如果这个项目对你有帮助，可以请我喝杯咖啡~
+
+| 支付宝 | 微信 |
+|--------|------|
+| ![支付宝](./assets/donate_alipay.jpg) | ![微信](./assets/donate_wechat.jpg) |
 
 ## 📃许可证
 

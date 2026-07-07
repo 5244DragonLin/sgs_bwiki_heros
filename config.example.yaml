@@ -11,8 +11,10 @@
 request:
   # bilibili 三国杀 WIKI 基础地址
   base_url: "https://wiki.biligame.com/sgs"
-  # 请求间隔（秒），含随机抖动，建议不低于 1.5s
-  delay: 2.0
+  # 基础请求间隔（秒）
+  delay: 1.0
+  # 随机抖动上限（秒）；实际间隔 = delay + random.uniform(0, delay_jitter)
+  delay_jitter: 2.0
   # 单个页面最大重试次数（567 频率限制时指数退避等待）
   max_retries: 5
   # 请求超时时间（秒）
