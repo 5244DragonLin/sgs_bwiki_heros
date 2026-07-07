@@ -236,9 +236,15 @@ sgs_bwiki_heros/
 
 - 首次发布
 
-## ⚠️免责声明
+## 🔗 关联项目
 
-本工具仅供学习交流使用，数据来源为 bilibili 三国杀 WIKI 公开页面。使用者应遵守目标网站的 robots.txt 及相关使用条款。因使用本工具产生的一切后果由使用者自行承担。
+- **[sgs-skin-gallery](https://github.com/5244DragonLin/sgs-skin-gallery)** — 基于本项目武将/皮肤数据的可视化画廊，前端浏览与收藏
+  - GitHub：https://github.com/5244DragonLin/sgs-skin-gallery
+  - Gitee：https://gitee.com/yhl5244/sgs-skin-gallery
+
+- **[sgs_bwiki_skins](https://github.com/5244DragonLin/sgs_bwiki_skins)** — 从 BWIKI 下载皮肤图片和元数据，本项目的皮肤图片数据源
+  - GitHub：https://github.com/5244DragonLin/sgs_bwiki_skins
+  - Gitee：https://gitee.com/yhl5244/sgs_bwiki_skins
 
 ## ☕捐赠
 
@@ -248,8 +254,10 @@ sgs_bwiki_heros/
 |--------|------|
 | ![支付宝](./assets/donate_alipay.jpg) | ![微信](./assets/donate_wechat.jpg) |
 
+## ⚠️免责声明
+
+本工具仅供学习交流使用，数据来源为 bilibili 三国杀 WIKI 公开页面。使用者应遵守目标网站的 robots.txt 及相关使用条款。因使用本工具产生的一切后果由使用者自行承担。
+
 ## 📃许可证
 
 本项目采用 MIT 许可证。详见 [LICENSE](./LICENSE) 文件。
-
-
