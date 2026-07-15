@@ -23,3 +23,6 @@ Thumbs.db
 *.swo
 
 config.yaml
+
+# Local-only reports
+sgs-data-missing-report.md
