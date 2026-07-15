@@ -40,9 +40,7 @@ filters:
   # 数量限制，0 表示不限制
   limit: 0
 
-# ---------- 增量爬取配置 ----------
-incremental:
-  # 是否启用增量模式（跳过已爬取且未变化的武将）
-  enabled: true
-  # checkpoint 文件路径（记录已爬取武将及页面 hash）
-  checkpoint_file: "output/checkpoint.json"
+# ---------- 原画爬取配置 ----------
+# 是否爬取武将「经典形象」原画并下载到 output/artworks/，默认关闭。
+# 亦可通过命令行参数 --crawl-artwork 临时开启（CLI 优先级高于本配置）。
+crawl_artwork: false

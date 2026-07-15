@@ -132,6 +132,20 @@ def fetch_page(url: str, retries: int = None) -> Optional[str]:
     return None
 
 
+def fetch_page_fresh(url: str) -> Optional[str]:
+    """单次页面获取（每次新建 Session，不继承 cookie，规避反爬污染）。"""
+    try:
+        sess = requests.Session()
+        r = sess.get(url, timeout=REQUEST_TIMEOUT, headers=HEADERS)
+        r.encoding = "utf-8"
+        sess.close()
+        if r.status_code == 200:
+            return r.text
+    except requests.RequestException:
+        pass
+    return None
+
+
 def url_encode_chinese(name: str) -> str:
     """对中文名字进行 URL 编码"""
     return requests.utils.quote(name, safe="")
@@ -470,31 +484,54 @@ def save_json(characters: list[dict], filepath: str):
 
 
 def load_checkpoint() -> dict:
-    """加载检查点（已爬取的武将数据）"""
-    checkpoint_path = os.path.join(OUTPUT_DIR, "checkpoint.json")
-    if os.path.exists(checkpoint_path):
-        with open(checkpoint_path, "r", encoding="utf-8") as f:
+    """从 characters.json 加载检查点（已爬取的武将数据与爬取状态）。"""
+    json_path = os.path.join(OUTPUT_DIR, "characters.json")
+    if os.path.exists(json_path):
+        with open(json_path, "r", encoding="utf-8") as f:
             try:
                 data = json.load(f)
-                print(f"[*] 加载检查点: {len(data.get('characters', []))} 个已爬取武将")
-                return data
-            except json.JSONDecodeError:
-                print("[!] 检查点损坏，重新爬取")
+                characters = data.get("characters", [])
+                meta = data.get("meta", {})
+                page_hashes = meta.get("page_hashes", {})
+                print(f"[*] 加载检查点: {len(characters)} 个已爬取武将")
+                return {
+                    "characters": characters,
+                    "processed_names": {c["name"] for c in characters},
+                    "page_hashes": page_hashes,
+                }
+            except (json.JSONDecodeError, KeyError):
+                print("[!] 检查点数据损坏，重新爬取")
     return {"characters": [], "processed_names": set(), "page_hashes": {}}
 
 
 def save_checkpoint(characters: list[dict]):
-    """保存检查点"""
-    checkpoint_path = os.path.join(OUTPUT_DIR, "checkpoint.json")
-    processed_names = {c["name"] for c in characters}
-    page_hashes = {c["name"]: c["page_hash"] for c in characters}
+    """保存检查点到 characters.json（含 page_hashes 断点信息）。"""
+    json_path = os.path.join(OUTPUT_DIR, "characters.json")
+
+    # 读取现有 meta.page_hashes 以保留已存在的哈希
+    existing_page_hashes = {}
+    if os.path.exists(json_path):
+        try:
+            with open(json_path, "r", encoding="utf-8") as f:
+                existing_page_hashes = json.load(f).get("meta", {}).get("page_hashes", {})
+        except Exception:
+            pass
+
+    # 从当前列表生成 page_hashes（覆盖历史值）
+    current_hashes = {c["name"]: c["page_hash"] for c in characters if "page_hash" in c}
+    page_hashes = {**existing_page_hashes, **current_hashes}
+
     data = {
+        "meta": {
+            "total": len(characters),
+            "crawl_time": datetime.now().isoformat(),
+            "source": INDEX_URL,
+            "page_hashes": page_hashes,
+            "updated_at": datetime.now().isoformat(),
+        },
         "characters": characters,
-        "processed_names": list(processed_names),
-        "page_hashes": page_hashes,
-        "updated_at": datetime.now().isoformat(),
     }
-    with open(checkpoint_path, "w", encoding="utf-8") as f:
+    with open(json_path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
@@ -798,6 +835,98 @@ def save_pack_mapping(mapping: dict, filepath: str):
     print(f"[+] 武将包映射已保存: {filepath}")
 
 
+# ============ 原画相关工具函数 ============
+
+
+def _normalize_artwork_src(url: str) -> str:
+    """将 MediaWiki 缩略图 URL 规范化为原图 URL。
+
+    wiki 的图片 URL 形如 .../thumb/f/f5/file.png/800px-file.png?xxx=yyy，
+    需要还原为 .../f/f5/file.png 以获取原图。
+    """
+    if not url:
+        return url
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    path = parsed.path
+    if "/thumb/" in path:
+        path = re.sub(r"/thumb(/[a-f0-9]/[a-f0-9]{2}/[^/]+)/[^/]+$", r"\1", path)
+    # 保留 scheme+host，否则相对路径无法下载
+    if parsed.scheme:
+        return f"{parsed.scheme}://{parsed.netloc}{path}"
+    return path
+
+
+def extract_classic_artwork_url(soup, name: str):
+    """从武将详情页中提取「经典形象」原画 URL。
+
+    匹配规则：找到 alt 属性包含 "{name}-经典形象" 的 img 标签。
+    """
+    img = soup.find("img", alt=lambda x: x and f"{name}-经典形象" in x)
+    if img:
+        src = img.get("src", "")
+        if src:
+            return _normalize_artwork_src(src)
+    return None
+
+
+def download_image(url: str, filepath: str) -> bool:
+    """下载图片到指定路径，返回是否成功。"""
+    try:
+        r = requests.get(url, timeout=30, headers={
+            "User-Agent": HEADERS["User-Agent"],
+            "Referer": BASE_URL,
+        })
+        if r.status_code == 200:
+            os.makedirs(os.path.dirname(filepath), exist_ok=True)
+            with open(filepath, "wb") as f:
+                f.write(r.content)
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def is_timed_mode_character(data: dict, name: str) -> bool:
+    """判断武将是否为限时玩法武将（限时地主 / 喵喵杀），需整将跳过。
+
+    武将包（pack）字段是可靠信号：数据源审计显示，名字含限时标记但 pack 正常的
+    反例为 0，故 pack 命中即判定为限时玩法。额外用武将名中含有的
+    「（限时地主）」/「（喵喵杀）」标记做冗余保险，进一步避免把限时玩法技能
+    误并入常驻数据。
+    """
+    pack = data.get("pack", "")
+    if "限时地主" in pack or "喵喵杀" in pack:
+        return True
+    if "限时地主" in name or "喵喵杀" in name:
+        return True
+    return False
+
+
+def load_artwork_checkpoint() -> dict:
+    """加载原画下载检查点。
+
+    artworks_checkpoint.json 格式：
+    {武将名: "ok" / "no_image" / "download_fail" / "page_fail" / "timed_mode" / "test_card"}
+    """
+    checkpoint_path = os.path.join(OUTPUT_DIR, "artworks_checkpoint.json")
+    if os.path.exists(checkpoint_path):
+        try:
+            with open(checkpoint_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def save_artwork_checkpoint(checkpoint: dict):
+    """保存原画下载检查点。"""
+    checkpoint_path = os.path.join(OUTPUT_DIR, "artworks_checkpoint.json")
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    with open(checkpoint_path, "w", encoding="utf-8") as f:
+        json.dump(checkpoint, f, ensure_ascii=False, indent=2)
+
+
 # ============ 主爬取循环 ============
 
 
@@ -808,152 +937,373 @@ def crawl(
     save_every: int = SAVE_EVERY_N,
     skip_existing: bool = True,
     resume: bool = True,
+    crawl_artwork: bool = False,
+    export_pack_map: bool = False,
 ):
-    """主爬取函数"""
+    """主爬取函数
 
-    # ---- 1. 获取武将列表 ----
-    all_characters, index_html = extract_character_list()
-    if not all_characters:
-        print("[!] 没有获取到武将列表，退出")
-        return
+    Args:
+        crawl_artwork: 是否额外爬取武将「经典形象」原画并下载到
+            output/artworks/。默认 False（不影响既有行为）。
+        export_pack_map: 是否额外导出 pack_character_map.json
+            武将包映射文件。默认 False（按需生成）。
+    """
 
-    # 提取武将包结构（顺序 + 图标）
-    pack_structure = extract_pack_structure(index_html)
+    try:
 
-    # ---- 2. 处理筛选条件 ----
-    need_filter_after = bool(faction_filter or pack_filter)
+            # ---- 1. 获取武将列表 ----
+        all_characters, index_html = extract_character_list()
+        if not all_characters:
+            print("[!] 没有获取到武将列表，退出")
+            return
 
-    if faction_filter:
-        print(f"[*] 爬取后只保留势力'{faction_filter}'的武将")
+        # 提取武将包结构（顺序 + 图标）
+        pack_structure = extract_pack_structure(index_html)
 
-    if pack_filter:
-        print(f"[*] 爬取后只保留武将包'{pack_filter}'的武将")
+        # ---- 2. 处理筛选条件 ----
+        need_filter_after = bool(faction_filter or pack_filter)
 
-    if limit and limit > 0 and not need_filter_after:
-        all_characters = all_characters[:limit]
-        print(f"[*] 限制爬取数量: {limit} 个")
+        if faction_filter:
+            print(f"[*] 爬取后只保留势力'{faction_filter}'的武将")
 
-    # ---- 3. 加载检查点（增量爬取） ----
-    checkpoint = load_checkpoint()
-    existing = checkpoint.get("characters", [])
-    existing_names = {c["name"] for c in existing}
-    existing_hashes = checkpoint.get("page_hashes", {})
+        if pack_filter:
+            print(f"[*] 爬取后只保留武将包'{pack_filter}'的武将")
 
-    # 如果启用增量，先用已有的数据
-    characters = list(existing) if skip_existing else []
+        if limit and limit > 0 and not need_filter_after:
+            all_characters = all_characters[:limit]
+            print(f"[*] 限制爬取数量: {limit} 个")
 
-    # 需要爬取的武将
-    to_crawl = []
-    for ch in all_characters:
-        if skip_existing and ch["name"] in existing_names:
-            continue
-        to_crawl.append(ch)
+        # ---- 3. 加载检查点（增量爬取） ----
+        checkpoint = load_checkpoint()
+        existing = checkpoint.get("characters", [])
+        existing_names = {c["name"] for c in existing}
+        existing_hashes = checkpoint.get("page_hashes", {})
 
-    print(f"[*] 需要爬取: {len(to_crawl)} 个武将（已存在 {len(existing_names)} 个）")
+        # 如果启用增量，先用已有的数据（排除限时/体验卡）
+        artwork_checkpoint_pre = load_artwork_checkpoint()
+        timed_total = sum(1 for v in artwork_checkpoint_pre.values() if v == "timed_mode")
+        test_total = sum(1 for v in artwork_checkpoint_pre.values() if v == "test_card")
+        characters = [
+            c for c in existing
+            if artwork_checkpoint_pre.get(c["name"]) not in ("timed_mode", "test_card")
+        ] if skip_existing else []
+        existing_normal = len(characters)
 
-    # ---- 4. 逐个爬取（进度条） ----
-    success_count = 0
-    fail_count = 0
-    matched_count = 0
-    target_count = limit if limit and need_filter_after else None
-    use_tqdm = tqdm is not None and len(to_crawl) > 1 and not target_count
-    iterator = tqdm(to_crawl, desc="爬取武将", unit="个") if use_tqdm else to_crawl
+        # 需要爬取的武将（排除检查点标记的限时玩法）
+        to_crawl = []
+        for ch in all_characters:
+            if skip_existing and ch["name"] in existing_names:
+                continue
+            # 跳过已在原画检查点中标记为限时/体验卡的武将
+            if artwork_checkpoint_pre.get(ch["name"]) in ("timed_mode", "test_card"):
+                continue
+            to_crawl.append(ch)
 
-    # 有筛选条件时手动显示进度
-    if target_count:
-        print(f"[*] 爬取中，目标: 收集 {target_count} 个符合条件的武将")
-    current_name = ""
+        print(f"[*] 需要爬取: {len(to_crawl)} 个武将（已存在 {existing_normal} 个，限时武将 {timed_total} 个，体验卡测试 {test_total} 个）")
 
-    for idx, ch in enumerate(iterator):
-        name = ch["name"]
-        current_name = name
+        # ---- 4. 逐个爬取（进度条） ----
+        success_count = 0
+        fail_count = 0
+        skip_count = 0
+        test_skip_count = 0
+        matched_count = 0
+        art_success = 0
+        art_fail = 0
+        art_skip = 0
+        artwork_dir = os.path.join(OUTPUT_DIR, "artworks") if crawl_artwork else None
+        target_count = limit if limit and need_filter_after else None
+        use_tqdm = tqdm is not None and len(to_crawl) > 1 and not target_count
+        iterator = tqdm(to_crawl, desc="爬取武将", unit="个") if use_tqdm else to_crawl
 
-        # 如果已达到目标筛选数量，提前结束
-        if target_count and matched_count >= target_count:
-            remaining = len(to_crawl) - idx
-            print(f"\n[+] 已收集满 {matched_count} 个，剩余 {remaining} 个不再爬取")
-            break
+        # 有筛选条件时手动显示进度
+        if target_count:
+            print(f"[*] 爬取中，目标: 收集 {target_count} 个符合条件的武将")
+        current_name = ""
 
-        if not use_tqdm and not target_count:
-            print(f"\n[{idx + 1}/{len(to_crawl)}] 正在爬取: {name}...")
+        for idx, ch in enumerate(iterator):
+            name = ch["name"]
+            current_name = name
 
-        html = fetch_page(ch["url"])
-        if not html:
+            # 如果已达到目标筛选数量，提前结束
+            if target_count and matched_count >= target_count:
+                remaining = len(to_crawl) - idx
+                print(f"\n[+] 已收集满 {matched_count} 个，剩余 {remaining} 个不再爬取")
+                break
+
             if not use_tqdm and not target_count:
-                print(f"  [!] 爬取失败: {name}，跳过")
-            fail_count += 1
-            continue
+                print(f"\n[{idx + 1}/{len(to_crawl)}] 正在爬取: {name}...")
 
+            html = fetch_page(ch["url"])
+            if not html:
+                if not use_tqdm and not target_count:
+                    print(f"  [!] 爬取失败: {name}，跳过")
+                fail_count += 1
+                continue
+
+            try:
+                data = parse_character_page(html, name)
+
+                # 限时武将跳过：写入原画检查点，下次不再爬取
+                if is_timed_mode_character(data, name):
+                    skip_count += 1
+                    artwork_checkpoint_pre[name] = "timed_mode"
+                    save_artwork_checkpoint(artwork_checkpoint_pre)
+                    if use_tqdm:
+                        iterator.set_postfix(skip=skip_count, current=name, fail=fail_count, success=success_count)
+                    else:
+                        print(f"  [-] 限时武将，跳过: {name}")
+                    continue
+
+                # 体验卡测试武将跳过：未正式上线，不纳入数据
+                if "体验卡测试" in html:
+                    test_skip_count += 1
+                    artwork_checkpoint_pre[name] = "test_card"
+                    save_artwork_checkpoint(artwork_checkpoint_pre)
+                    if use_tqdm:
+                        iterator.set_postfix(skip=skip_count, current=name, fail=fail_count, success=success_count)
+                    else:
+                        print(f"  [-] 体验卡测试武将，跳过: {name}")
+                    continue
+
+                characters.append(data)
+                success_count += 1
+
+                # 同步下载原画（复用已获取的 HTML，省去二次请求）
+                if crawl_artwork:
+                    soup_art = BeautifulSoup(html, "html.parser")
+                    artwork_url = extract_classic_artwork_url(soup_art, name)
+                    # 主 SESSION 长任务后可能被反爬污染（HTML 残缺无 img 标签），
+                    # 用独立 Session 兜底重试一次
+                    if not artwork_url:
+                        fresh_html = fetch_page_fresh(ch["url"])
+                        if fresh_html:
+                            soup_fresh = BeautifulSoup(fresh_html, "html.parser")
+                            artwork_url = extract_classic_artwork_url(soup_fresh, name)
+                    if artwork_url:
+                        _, ext = os.path.splitext(artwork_url)
+                        ext = ext.lower() if ext.lower() in (".png", ".jpg", ".jpeg") else ".png"
+                        artwork_path = os.path.join(artwork_dir, f"{name}-经典形象{ext}")
+                        if os.path.exists(artwork_path):
+                            art_skip += 1
+                            artwork_checkpoint_pre[name] = "ok"
+                        elif download_image(artwork_url, artwork_path):
+                            art_success += 1
+                            artwork_checkpoint_pre[name] = "ok"
+                        else:
+                            art_fail += 1
+                            artwork_checkpoint_pre[name] = "download_fail"
+                    else:
+                        art_fail += 1
+                        artwork_checkpoint_pre[name] = "no_image"
+                    save_artwork_checkpoint(artwork_checkpoint_pre)
+
+                # 检查是否符合筛选条件
+                if need_filter_after:
+                    matches = True
+                    if faction_filter and data.get("faction", "") != faction_filter:
+                        matches = False
+                    if pack_filter and pack_filter not in data.get("pack", ""):
+                        matches = False
+                    if matches:
+                        matched_count += 1
+                        if target_count:
+                            print(f"  ✓ 第{matched_count}/{target_count}个: {name} ({data['faction']}·{data['pack']})")
+                    else:
+                        if target_count:
+                            print(f"  ✗ 不匹配: {name} ({data['faction']}·{data['pack']})")
+
+                if use_tqdm:
+                    iterator.set_postfix(
+                        success=success_count,
+                        skip=skip_count,
+                        fail=fail_count,
+                        current=name,
+                    )
+            except Exception as e:
+                if not use_tqdm and not target_count:
+                    print(f"  [!] 解析失败: {name} - {e}")
+                fail_count += 1
+                continue
+
+            # 自动保存
+            if (idx + 1) % save_every == 0:
+                save_checkpoint(characters)
+
+            time.sleep(DELAY_BASE + random.uniform(0, DELAY_JITTER))
+
+        timed_display = timed_total + skip_count  # 历史检查点 + 本次爬取新增
+        test_display = test_total + test_skip_count  # 历史检查点 + 本次爬取新增
+        print(f"\n[+] 爬取完成: 成功 {success_count}，跳过(已存在) {existing_normal}，跳过(限时武将) {timed_display}，跳过(体验卡测试) {test_display}，失败 {fail_count}")
+        if crawl_artwork:
+            print(f"[+] 原画下载(同步): 成功 {art_success}，跳过(已存在) {art_skip}，失败(无原画/下载失败) {art_fail}")
+
+        if use_tqdm:
+            # 关闭前刷新最终统计
+            iterator.set_postfix(
+                success=success_count,
+                fail=fail_count,
+                skip=skip_count,
+                current=current_name,
+            )
+            iterator.close()
+
+        # ---- 5. 为已有武将下载原画（仅 crawl_artwork 模式） ----
+        if crawl_artwork and existing:
+            artwork_checkpoint = load_artwork_checkpoint()
+            checkpoint_skip = sum(1 for v in artwork_checkpoint.values() if v == "ok")
+
+            art_pending = [c for c in existing if artwork_checkpoint.get(c["name"]) not in ("ok", "timed_mode", "test_card")]
+
+            print(f"\n[*] 开始为已有 {len(existing)} 个武将下载原画...")
+            if checkpoint_skip:
+                print(f"    检查点跳过 {checkpoint_skip} 个（已成功），待处理 {len(art_pending)} 个")
+
+            art_success = 0
+            art_fail = 0
+            art_skip = checkpoint_skip
+            art_failures = []
+            artwork_dir = os.path.join(OUTPUT_DIR, "artworks")
+
+            if art_pending:
+                art_iterator = tqdm(art_pending, desc="下载原画", unit="个") if tqdm else art_pending
+
+                for idx, ch_data in enumerate(art_iterator):
+                    name = ch_data["name"]
+
+                    if tqdm:
+                        art_iterator.set_postfix(
+                            success=art_success,
+                            fail=art_fail,
+                            skip=art_skip,
+                            current=name,
+                        )
+
+                    # 跳过限时玩法武将
+                    if is_timed_mode_character(ch_data, name):
+                        art_skip += 1
+                        artwork_checkpoint[name] = "timed_mode"
+                        save_artwork_checkpoint(artwork_checkpoint)
+                        continue
+
+                    # 获取武将页面
+                    url = f"{BASE_URL}/{url_encode_chinese(name)}"
+                    html = fetch_page_fresh(url)
+                    if not html:
+                        art_fail += 1
+                        art_failures.append((name, "页面获取失败"))
+                        artwork_checkpoint[name] = "page_fail"
+                        save_artwork_checkpoint(artwork_checkpoint)
+                        continue
+
+                    # 跳过体验卡测试武将（未正式上线，无原画）
+                    if "体验卡测试" in html:
+                        art_skip += 1
+                        artwork_checkpoint[name] = "test_card"
+                        save_artwork_checkpoint(artwork_checkpoint)
+                        continue
+
+                    # 提取原画 URL
+                    soup = BeautifulSoup(html, "html.parser")
+                    artwork_url = extract_classic_artwork_url(soup, name)
+                    if not artwork_url:
+                        art_fail += 1
+                        art_failures.append((name, "页面无经典形象图片"))
+                        artwork_checkpoint[name] = "no_image"
+                        save_artwork_checkpoint(artwork_checkpoint)
+                        continue
+
+                    # 确定文件名（从 URL 取扩展名）
+                    _, ext = os.path.splitext(artwork_url)
+                    ext = ext.lower() if ext.lower() in (".png", ".jpg", ".jpeg") else ".png"
+                    artwork_filename = f"{name}-经典形象{ext}"
+                    artwork_path = os.path.join(artwork_dir, artwork_filename)
+
+                    # 检查原画是否已存在
+                    if os.path.exists(artwork_path):
+                        art_skip += 1
+                        artwork_checkpoint[name] = "ok"
+                        save_artwork_checkpoint(artwork_checkpoint)
+                        continue
+
+                    # 下载原画
+                    if download_image(artwork_url, artwork_path):
+                        art_success += 1
+                        artwork_checkpoint[name] = "ok"
+                        save_artwork_checkpoint(artwork_checkpoint)
+                    else:
+                        art_fail += 1
+                        art_failures.append((name, "图片下载失败"))
+                        artwork_checkpoint[name] = "download_fail"
+                        save_artwork_checkpoint(artwork_checkpoint)
+
+                # 最终落盘
+                save_artwork_checkpoint(artwork_checkpoint)
+
+                if tqdm:
+                    art_iterator.set_postfix(
+                        success=art_success,
+                        fail=art_fail,
+                        skip=art_skip,
+                        current="",
+                    )
+                    art_iterator.close()
+
+            print(f"[+] 原画下载完成: 成功 {art_success}, 跳过 {art_skip}, 失败 {art_fail}")
+            if art_failures:
+                print(f"\n[!] 失败的 {len(art_failures)} 个武将:")
+                for f_name, f_reason in art_failures:
+                    print(f"    {f_name} - {f_reason}")
+
+        # ---- 6. 应用筛选 ----
+        if need_filter_after and characters:
+            before = len(characters)
+            filtered = []
+            for c in characters:
+                if faction_filter and c.get("faction", "") != faction_filter:
+                    continue
+                if pack_filter and pack_filter not in c.get("pack", ""):
+                    continue
+                filtered.append(c)
+            characters = filtered
+            if limit:
+                characters = characters[:limit]
+            print(f"[*] 筛选: {before} → {len(characters)} 个武将")
+
+        # ---- 7. 最终保存 ----
+        print("\n" + "=" * 50)
+        print(f"[*] 爬取完成，共 {len(characters)} 个武将")
+
+        save_checkpoint(characters)
+
+        # ---- 7. 生成武将包映射（按需） ----
+        if export_pack_map and pack_structure and characters:
+            mapping = generate_pack_mapping(characters, pack_structure)
+            save_pack_mapping(mapping, os.path.join(OUTPUT_DIR, "pack_character_map.json"))
+
+        return characters
+
+    except KeyboardInterrupt:
+        print("\n\n[!] 中断信号收到，正在保存当前进度...")
         try:
-            data = parse_character_page(html, name)
-            characters.append(data)
-            success_count += 1
-
-            # 检查是否符合筛选条件
-            if need_filter_after:
-                matches = True
-                if faction_filter and data.get("faction", "") != faction_filter:
-                    matches = False
-                if pack_filter and pack_filter not in data.get("pack", ""):
-                    matches = False
-                if matches:
-                    matched_count += 1
-                    if target_count:
-                        print(f"  ✓ 第{matched_count}/{target_count}个: {name} ({data['faction']}·{data['pack']})")
-                else:
-                    if target_count:
-                        print(f"  ✗ 不匹配: {name} ({data['faction']}·{data['pack']})")
-
-            if use_tqdm:
-                iterator.set_postfix(
-                    success=success_count,
-                    fail=fail_count,
-                    current=name,
-                )
-        except Exception as e:
-            if not use_tqdm and not target_count:
-                print(f"  [!] 解析失败: {name} - {e}")
-            fail_count += 1
-            continue
-
-        # 自动保存
-        if (idx + 1) % save_every == 0:
             save_checkpoint(characters)
-            save_json(characters, os.path.join(OUTPUT_DIR, "characters.json"))
+            print(f"    [+] 武将检查点已保存: {len(characters)} 个")
+        except NameError:
+            pass
+        except Exception as e:
+            print(f"    [!] 保存武将检查点失败: {e}")
 
-        time.sleep(DELAY_BASE + random.uniform(0, DELAY_JITTER))  # 加随机抖动
+        if crawl_artwork:
+            try:
+                save_artwork_checkpoint(artwork_checkpoint)
+                done = sum(1 for v in artwork_checkpoint.values() if v == "ok")
+                print(f"    [+] 原画检查点已保存: {done} 个成功")
+            except (NameError, UnboundLocalError):
+                pass
+            except Exception as e:
+                print(f"    [!] 保存原画检查点失败: {e}")
 
-    if use_tqdm:
-        iterator.close()
-
-    # ---- 5. 应用筛选 ----
-    if need_filter_after and characters:
-        before = len(characters)
-        filtered = []
-        for c in characters:
-            if faction_filter and c.get("faction", "") != faction_filter:
-                continue
-            if pack_filter and pack_filter not in c.get("pack", ""):
-                continue
-            filtered.append(c)
-        characters = filtered
-        if limit:
-            characters = characters[:limit]
-        print(f"[*] 筛选: {before} → {len(characters)} 个武将")
-
-    # ---- 6. 最终保存 ----
-    print("\n" + "=" * 50)
-    print(f"[*] 爬取完成，共 {len(characters)} 个武将")
-
-    save_checkpoint(characters)
-    save_json(characters, os.path.join(OUTPUT_DIR, "characters.json"))
-
-    # ---- 6. 生成武将包映射 ----
-    if pack_structure and characters:
-        mapping = generate_pack_mapping(characters, pack_structure)
-        save_pack_mapping(mapping, os.path.join(OUTPUT_DIR, "pack_character_map.json"))
-
-    return characters
+        print("[+] 进度已安全保存，下次运行可从断点继续。")
+        sys.exit(130)
 
 
 # ============ 命令行入口 ============
@@ -1008,6 +1358,10 @@ def _flatten_config(data: dict) -> dict:
     if isinstance(incremental, dict) and "enabled" in incremental:
         if not incremental["enabled"]:
             flat["no_skip"] = True
+
+    # 原画爬取（顶层字段）
+    if data.get("crawl_artwork"):
+        flat["crawl_artwork"] = data["crawl_artwork"]
 
     # 网络请求参数（使 config.yaml 中的 request.* 真正生效）
     request = data.get("request", {})
@@ -1120,6 +1474,16 @@ def main(argv=None):
         "--timeout", type=int, default=REQUEST_TIMEOUT,
         help=f"请求超时（秒）（默认 {REQUEST_TIMEOUT}）",
     )
+    parser.add_argument(
+        "--crawl-artwork",
+        action="store_true",
+        help="爬取武将「经典形象」原画并下载到 output/artworks/（默认关闭）",
+    )
+    parser.add_argument(
+        "--export-pack-map",
+        action="store_true",
+        help="导出武将包映射文件 pack_character_map.json（默认不导出）",
+    )
     if yaml_defaults:
         parser.set_defaults(**yaml_defaults)
 
@@ -1160,6 +1524,10 @@ def main(argv=None):
         return
 
     # 爬取模式
+    # 原画爬取生效条件：CLI --crawl-artwork 或 config.yaml 的 crawl_artwork 任一为真
+    crawl_artwork_enabled = bool(args.crawl_artwork) or bool(
+        yaml_defaults.get("crawl_artwork", False)
+    )
     crawl(
         pack_filter=args.pack,
         faction_filter=args.faction,
@@ -1167,6 +1535,8 @@ def main(argv=None):
         save_every=args.auto_save,
         skip_existing=not args.no_skip,
         resume=not args.no_resume,
+        crawl_artwork=crawl_artwork_enabled,
+        export_pack_map=args.export_pack_map,
     )
 
 
