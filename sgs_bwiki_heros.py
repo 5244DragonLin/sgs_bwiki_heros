@@ -151,6 +151,39 @@ def url_encode_chinese(name: str) -> str:
     return requests.utils.quote(name, safe="")
 
 
+def fetch_classic_story_smw(name: str) -> Optional[str]:
+    """通过 Semantic MediaWiki API 查询武将经典形象故事。
+
+    故事存储在语义属性「经典形象故事」中，页面需属于分类「武将图鉴测试」。
+    使用专用 Session 避免污染全局 SESSION 的 cookie。
+
+    Args:
+        name: 武将名
+
+    Returns:
+        故事文本字符串，若无故事则返回 None。
+    """
+    query = f"[[分类:武将图鉴测试]][[武将名::{name}]]|?经典形象故事"
+    url = f"{BASE_URL}/api.php?action=ask&query={requests.utils.quote(query, safe='')}&format=json"
+    try:
+        sess = requests.Session()
+        sess.headers.update(HEADERS)
+        r = sess.get(url, timeout=REQUEST_TIMEOUT)
+        sess.close()
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        results = data.get("query", {}).get("results", {})
+        for page_name, page_data in results.items():
+            stories = page_data.get("printouts", {}).get("经典形象故事", [])
+            if stories:
+                # 故事可能包含 HTML 标签（如 <br>），保留原文
+                return stories[0]
+    except Exception:
+        pass
+    return None
+
+
 # ============ 武将列表获取 ============
 
 
@@ -463,18 +496,85 @@ def _parse_skills_and_lines(section, skills_data: dict, char_name: str):
                     skills_data["lines"][target_skill] = []
                 skills_data["lines"][target_skill].append(description)
 
+# ============ 字段命名统一（出口中文 / 入口英文） ============
+# 上游统一约定：两个管线输出都采用 {meta, data:[...]} 信封 + 全中文字段，
+# 并以「武将名」作为跨管线对齐锚点，方便互补。爬虫内部仍用英文键，仅在
+# 出口（保存）转中文、入口（续爬加载）转回英文，爬虫逻辑零改动。
+_VERSION_ZH = {"classic": "经典", "breakthrough": "界限突破", "national_war": "国战"}
+_VERSION_EN = {"经典": "classic", "界限突破": "breakthrough", "国战": "national_war"}
+
+
+def character_to_zh(c: dict) -> dict:
+    """将内部英文字段转换为统一的中文输出格式（出口）。"""
+    zh = {
+        "姓名": c.get("name", ""),
+        "性别": c.get("gender", ""),
+        "势力": c.get("faction", ""),
+        "名将堂": c.get("hall_of_fame", ""),
+        "别称": c.get("nickname", ""),
+        "称号": c.get("title", ""),
+        "武将包": c.get("pack", ""),
+        "武将上线时间": c.get("release_time", ""),
+        "珠联璧合": c.get("alliances", []),
+        "战功": c.get("achievements", []),
+        "定位": c.get("position", ""),
+    }
+    versions_zh = {}
+    for vk, vv in (c.get("versions") or {}).items():
+        versions_zh[_VERSION_ZH.get(vk, vk)] = {
+            "技能": vv.get("skills", []),
+            "武将台词": vv.get("lines", {}),
+        }
+    zh["版本"] = versions_zh
+    if c.get("classic_story"):
+        zh["武将故事"] = c.get("classic_story")
+    # 技术字段保留英文（不参与互补）
+    zh["page_hash"] = c.get("page_hash")
+    zh["crawl_time"] = c.get("crawl_time")
+    return zh
+
+
+def character_from_zh(zh: dict) -> dict:
+    """将统一的中文格式还原为内部英文（入口，供增量爬取续爬）。"""
+    en = {
+        "name": zh.get("姓名", ""),
+        "gender": zh.get("性别", ""),
+        "faction": zh.get("势力", ""),
+        "hall_of_fame": zh.get("名将堂", ""),
+        "nickname": zh.get("别称", ""),
+        "title": zh.get("称号", ""),
+        "pack": zh.get("武将包", ""),
+        "release_time": zh.get("武将上线时间", ""),
+        "alliances": zh.get("珠联璧合", []),
+        "achievements": zh.get("战功", []),
+        "position": zh.get("定位", ""),
+    }
+    versions_en = {}
+    for vk, vv in (zh.get("版本") or {}).items():
+        versions_en[_VERSION_EN.get(vk, vk)] = {
+            "skills": vv.get("技能", []),
+            "lines": vv.get("武将台词", {}),
+        }
+    en["versions"] = versions_en
+    if zh.get("武将故事"):
+        en["classic_story"] = zh.get("武将故事")
+    en["page_hash"] = zh.get("page_hash")
+    en["crawl_time"] = zh.get("crawl_time")
+    return en
+
+
 # ============ 数据存储 ============
 
 
 def save_json(characters: list[dict], filepath: str):
-    """保存为 JSON 格式"""
+    """保存为 JSON 格式（统一信封 {meta, data}，全中文字段）"""
     data = {
         "meta": {
             "total": len(characters),
             "crawl_time": datetime.now().isoformat(),
             "source": INDEX_URL,
         },
-        "characters": characters,
+        "data": [character_to_zh(c) for c in characters],
     }
     with open(filepath, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
@@ -490,7 +590,8 @@ def load_checkpoint() -> dict:
         with open(json_path, "r", encoding="utf-8") as f:
             try:
                 data = json.load(f)
-                characters = data.get("characters", [])
+                # 兼容新旧格式：新格式 {meta, data:[...]}，旧格式 {meta, characters:[...]}
+                characters = [character_from_zh(c) for c in data.get("data", data.get("characters", []))]
                 meta = data.get("meta", {})
                 page_hashes = meta.get("page_hashes", {})
                 print(f"[*] 加载检查点: {len(characters)} 个已爬取武将")
@@ -529,7 +630,7 @@ def save_checkpoint(characters: list[dict]):
             "page_hashes": page_hashes,
             "updated_at": datetime.now().isoformat(),
         },
-        "characters": characters,
+        "data": [character_to_zh(c) for c in characters],
     }
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
@@ -1064,6 +1165,11 @@ def crawl(
                     else:
                         print(f"  [-] 体验卡测试武将，跳过: {name}")
                     continue
+
+                # 获取经典形象故事（通过 SMW API）
+                classic_story = fetch_classic_story_smw(name)
+                if classic_story:
+                    data["classic_story"] = classic_story
 
                 characters.append(data)
                 success_count += 1

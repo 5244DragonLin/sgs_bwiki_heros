@@ -22,6 +22,7 @@
 - **武将包映射**：自动生成 `pack_character_map.json`，按网站顺序列出所有武将包，包含大类和子包图标路径
 - **多参数筛选**：按武将包、势力、数量、版本自由组合查询
 - **经典形象原画爬取**：可选下载武将「经典形象」原画到 `output/artworks/{name}-经典形象.png`，并在数据中记录 `artwork` 相对路径（默认关闭）
+- **经典形象故事爬取**：通过 Semantic MediaWiki API 自动获取武将「经典形象故事」文本，存入 `classic_story` 字段（无需额外参数）
 - **仅查询模式**：爬完后的数据可离线筛选，无需重新请求网络
 
 ## 📸效果预览
@@ -52,28 +53,48 @@ output/
 └── artworks_checkpoint.json     # 原画下载进度断点
 ```
 
-### JSON 示例（关羽·经典版本）
+### JSON 示例（关羽·统一格式）
+
+> 输出采用 `{meta, data}` 信封 + 全中文字段，以「姓名」作为跨管线对齐锚点（详见 [sgs_bwiki_skins](../sgs_bwiki_skins) 的统一约定）。
 
 ```json
 {
-  "name": "关羽",
-  "gender": "男",
-  "faction": "蜀",
-  "hall_of_fame": "五虎上将",
-  "pack": "标准-蜀汉虎将",
-  "release_time": "开服",
-  "alliances": ["刘备"],
-  "versions": {
-    "classic": {
-      "skills": [
-        {"name": "武圣", "description": "你可以将一张红色牌当【杀】使用或打出。"}
-      ],
-      "lines": {
-        "武圣": ["关羽在此，尔等受死！/看尔乃插标卖首！"],
-        "阵亡": ["什么？此地名叫麦城。"]
-      }
+  "meta": {
+    "total": 587,
+    "crawl_time": "2026-07-16T10:50:00",
+    "source": "https://wiki.biligame.com/sgs/..."
+  },
+  "data": [
+    {
+      "姓名": "关羽",
+      "性别": "男",
+      "势力": "蜀",
+      "名将堂": "五虎上将",
+      "别称": "关二爷",
+      "称号": "美髯公",
+      "武将包": "标准-蜀汉虎将",
+      "武将上线时间": "开服",
+      "珠联璧合": ["刘备", "张飞"],
+      "战功": ["战功*忠义果敢"],
+      "定位": "攻击",
+      "版本": {
+        "经典": {
+          "技能": [
+            {"name": "武圣", "description": "你可以将一张红色牌当【杀】使用或打出。"}
+          ],
+          "武将台词": {
+            "武圣": ["关羽在此，尔等受死！/看尔乃插标卖首！"],
+            "阵亡": ["什么？此地名叫麦城。"]
+          }
+        },
+        "界限突破": { "技能": [...], "武将台词": {...} },
+        "国战":       { "技能": [...], "武将台词": {...} }
+      },
+      "武将故事": "关羽（160-220年），本字长生，后改字云长，河东郡解县人，蜀汉名将。...",
+      "page_hash": "a1b2c3...",
+      "crawl_time": "2026-07-16T10:50:00"
     }
-  }
+  ]
 }
 ```
 
@@ -250,14 +271,12 @@ sgs_bwiki_heros/
 
 ### v0.3
 
-- **新增：** 经典形象原画爬取——新增 `--crawl-artwork` 命令行参数与 `config.yaml` 的 `crawl_artwork` 开关（默认关闭）；按 `alt="{name}-经典形象.png"` 精确定位原画图并还原大图 URL，下载到 `output/artworks/{name}-经典形象.png`，在武将数据中记录 `artwork` 相对路径；下载失败不阻断武将入库。测试见 `tests/verify_artwork_crawl.py`
-- **修复：** 原画下载反爬污染——全局 SESSION 在 600+ 请求后被标记，返回残缺 HTML 导致原画提取失败；新增 `fetch_page_fresh`（每次新建 Session，不继承 cookie）专供原画下载阶段兜底使用
-- **修复：** 原画 URL 规范化 Bug——`_normalize_artwork_src` 解析 URL 后丢失 host，导致 `download_image` 收到相对路径而报 Invalid URL；改为保留完整 URL 格式
+- **新增：** 经典形象故事爬取——通过 Semantic MediaWiki API 查询武将「经典形象故事」语义属性，存入 `characters.json` 的 `classic_story` 字段，随爬取自动完成，无需额外参数
+- **新增：** 经典形象原画爬取——新增 `--crawl-artwork` 命令行参数与 `config.yaml` 的 `crawl_artwork` 开关（默认关闭）；按 `alt="{name}-经典形象.png/jpg"` 模糊匹配原画图并还原大图 URL，下载到 `output/artworks/{name}-经典形象.{ext}`，在武将数据中记录 `artwork` 相对路径；下载失败不阻断武将入库
 - **新增：** 体验卡测试武将自动过滤——爬取阶段检测「体验卡测试」标记并排除 19 个未正式上线武将；输出统计单独展示体验卡跳过数量
-- **修复：** 技能 / 台词解析错误——WIKI 新版模板移除 `技能标签` CSS 类导致技能被当成台词丢弃；改为 row 级判定（用 `bikit-audio` 区分技能 / 台词），删除误把含 `/` 的技能描述判为台词的旧分支，新增 `row_container` 兜底。修复影响卫温诸葛直 / 孙霸 / 文钦等武将。测试见 `tests/verify_skill_fix.py`
+- **修复：** 技能 / 台词解析错误——WIKI 新版模板移除 `技能标签` CSS 类导致技能被当成台词丢弃；改为 row 级判定（用 `bikit-audio` 区分技能 / 台词），删除误把含 `/` 的技能描述判为台词的旧分支，新增 `row_container` 兜底。修复影响卫温诸葛直 / 孙霸 / 文钦等武将。
 - **修复：** 跳过限时玩法技能数据——`parse_character_page` 改用"最近前置 h2 配对"策略，对自走棋 / 限时地主 / 喵喵杀等非常驻玩法区块整体跳过；新增 `is_timed_mode_character` 谓词，按 `pack` 字段或武将名括号标记在抓取主循环过滤，避免限时玩法污染常驻武将数据集
-- **优化：** 爬取进度输出细化——摘要行从单一「跳过(限时武将) N」拆分为「跳过(已存在)/跳过(限时武将)/跳过(体验卡测试)」三项
-- **优化：** 原画下载统计顺序调整为「成功/跳过/失败」，无待处理项目时不再显示空进度条
+- **优化：** 爬取进度输出细化——摘要行拆分为「跳过(已存在)/跳过(限时武将)/跳过(体验卡测试)」三项
 - **优化：** 检查点数据（page_hashes）统一存入 `characters.json` 的 `meta` 字段，去除独立的 `checkpoint.json` 文件
 - **优化：** 武将包映射 `pack_character_map.json` 改为 `--export-pack-map` 可选导出
 
@@ -266,7 +285,6 @@ sgs_bwiki_heros/
 - **新增：** 请求间隔随机抖动：实际间隔 = `request.delay` + `random.uniform(0, request.delay_jitter)`，默认 `1.0 + 0~2.0` 秒，打破机械节奏，降低被识别概率
 - **新增：** 网络参数（delay / delay_jitter / max_retries / timeout）现可通过 `config.yaml` 或命令行参数配置；先前这些字段虽写在配置文件中但未被代码读取，本次一并修复
 - **修复：** bwiki 频率限制（HTTP 567）被快速拦截的问题：补全请求头（Referer / Accept / Accept-Language 等），并改用 `requests.Session` 保持会话与 cookie，使请求更接近真实浏览器
-- 同步更新 README 配置说明、CLI 参数表与 FAQ
 
 ### v0.1
 
