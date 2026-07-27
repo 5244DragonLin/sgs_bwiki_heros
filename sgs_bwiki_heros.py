@@ -8,7 +8,7 @@
 
 爬取字段：
   - 武将名、性别、势力、名将堂、别称
-  - 武将包、上线时间、珠联璧合（国战专属）、战功、定位
+  - 武将包、上线时间、珠联璧合（国战专属）、战功（名称+描述）、定位
   - 每种版本（经典 / 界限突破 / 国战）下的：技能名 + 技能描述 + 台词
 
 功能特性：
@@ -181,6 +181,31 @@ def fetch_classic_story_smw(name: str) -> Optional[str]:
                 return stories[0]
     except Exception:
         pass
+    return None
+
+
+def fetch_achievement_description(name: str) -> Optional[str]:
+    """抓取单个战功的描述文本。
+
+    战功详情页 URL 形如 ``https://wiki.biligame.com/sgs/战功*{name}``，
+    页面含一张信息框表格，其中 ``<th>战功描述</th>`` 对应的 ``<td>`` 即描述文本。
+
+    返回描述字符串；页面不存在（如野榜战功）或解析失败时返回 ``None``。
+    """
+    url = f"{BASE_URL}/{url_encode_chinese('战功*' + name)}"
+    html = fetch_page(url)
+    if not html:
+        return None
+    soup = BeautifulSoup(html, "html.parser")
+    # 页面不存在（wgArticleId=0）时无信息框表格，直接返回 None
+    for th in soup.find_all("th"):
+        label = clean_text(th.get_text())
+        if label == "战功描述":
+            tr = th.find_parent("tr")
+            if tr:
+                td = tr.find("td")
+                if td:
+                    return clean_text(td.get_text())
     return None
 
 
@@ -374,10 +399,27 @@ def parse_character_page(html: str, char_name: str) -> dict:
                     elif "战功" in key:
                         achievements = []
                         for a in row_container.find_all("a"):
-                            achievements.append(a.get_text(strip=True))
-                        result["achievements"] = achievements
+                            t = a.get_text(strip=True)
+                            # 去掉 wiki 页面链接标题自带的前缀 "战功*"
+                            # （如页面文本为 "战功*龙吟九霄"，只保留 "龙吟九霄"）
+                            if t.startswith("战功*"):
+                                t = t[len("战功*"):]
+                            if t:
+                                achievements.append({"name": t, "description": None})
+                        # 只覆盖非空值——页面可能有 "暂无" 行覆盖已提取的正确数据
+                        if achievements:
+                            result["achievements"] = achievements
                     elif "定位" in key:
-                        result["position"] = value
+                        # 定位由多个独立 badge 标签组成（如「控制」「攻击」），
+                        # 逐个提取为数组，避免 get_text() 把多标签连成「控制攻击」
+                        tags = []
+                        for badge in value_div.find_all("span", class_="popup badge"):
+                            a = badge.find("a")
+                            if a:
+                                t = clean_text(a.get_text())
+                                if t:
+                                    tags.append(t)
+                        result["position"] = tags if tags else value
             break
 
     # ---- 4. 各版本技能与台词 ----
@@ -429,6 +471,7 @@ def parse_character_page(html: str, char_name: str) -> dict:
     for vkey, sec in zip(versions_in_order, sections_in_order):
         skills_data = {"skills": [], "lines": {}}
         _parse_skills_and_lines(sec, skills_data, result["name"])
+        _dedupe_legacy_skills(skills_data)
         if skills_data["skills"] or skills_data["lines"]:
             result["versions"][vkey] = skills_data
 
@@ -496,6 +539,60 @@ def _parse_skills_and_lines(section, skills_data: dict, char_name: str):
                     skills_data["lines"][target_skill] = []
                 skills_data["lines"][target_skill].append(description)
 
+
+# Bwiki 用 ☆ / ★ 前缀标注「技能修改前的旧版」，与无前缀的当前版同名并存。
+# 我们只保留当前版（无前缀），旧版丢弃；若某技能仅有带标记的旧版（极少见），
+# 则保留并去除前缀，避免丢数据。台词键同步重映射。
+_LEGACY_MARKERS = ("☆", "★")
+
+
+def _strip_legacy_marker(name: str) -> str:
+    n = name
+    for m in _LEGACY_MARKERS:
+        n = n.replace(m, "")
+    return n.strip()
+
+
+def _dedupe_legacy_skills(skills_data: dict):
+    """移除同名旧版技能（☆/★ 前缀），仅保留当前版；重映射台词键。"""
+    skills = skills_data.get("skills", [])
+    if not skills:
+        return
+    lines = skills_data.get("lines", {})
+
+    groups = {}
+    for i, s in enumerate(skills):
+        base = _strip_legacy_marker(s["name"])
+        groups.setdefault(base, []).append(i)
+
+    drop = set()
+    rename = {}  # 旧技能名 -> 新技能名（用于台词重映射）
+    for base, idxs in groups.items():
+        legacy_idxs = [i for i in idxs if skills[i]["name"].lstrip().startswith(_LEGACY_MARKERS)]
+        plain_idxs = [i for i in idxs if i not in legacy_idxs]
+        if plain_idxs:
+            # 当前版存在则丢弃所有旧版，并把旧版台词并入当前版
+            for i in legacy_idxs:
+                drop.add(i)
+                rename[skills[i]["name"]] = base
+        elif legacy_idxs:
+            # 仅有旧版：保留并去除前缀，保证不丢数据
+            keep_i = legacy_idxs[0]
+            old_name = skills[keep_i]["name"]
+            skills[keep_i]["name"] = base
+            rename[old_name] = base
+
+    if drop:
+        skills_data["skills"] = [s for i, s in enumerate(skills) if i not in drop]
+    if rename:
+        new_lines = {}
+        for k, v in lines.items():
+            nk = rename.get(k, k)
+            new_lines.setdefault(nk, [])
+            new_lines[nk].extend(v)
+        skills_data["lines"] = new_lines
+
+
 # ============ 字段命名统一（出口中文 / 入口英文） ============
 # 上游统一约定：两个管线输出都采用 {meta, data:[...]} 信封 + 全中文字段，
 # 并以「武将名」作为跨管线对齐锚点，方便互补。爬虫内部仍用英文键，仅在
@@ -516,7 +613,10 @@ def character_to_zh(c: dict) -> dict:
         "武将包": c.get("pack", ""),
         "武将上线时间": c.get("release_time", ""),
         "珠联璧合": c.get("alliances", []),
-        "战功": c.get("achievements", []),
+        "战功": [
+            {"name": a["name"], "description": a.get("description")}
+            for a in c.get("achievements", [])
+        ],
         "定位": c.get("position", ""),
     }
     versions_zh = {}
@@ -536,6 +636,11 @@ def character_to_zh(c: dict) -> dict:
 
 def character_from_zh(zh: dict) -> dict:
     """将统一的中文格式还原为内部英文（入口，供增量爬取续爬）。"""
+    # 兼容旧格式：战功为字符串列表 + 独立「战功描述」映射
+    _ach_raw = zh.get("战功", [])
+    _ach_desc_map = zh.get("战功描述", {})
+    if _ach_raw and isinstance(_ach_raw[0], str):
+        _ach_raw = [{"name": n, "description": _ach_desc_map.get(n)} for n in _ach_raw]
     en = {
         "name": zh.get("姓名", ""),
         "gender": zh.get("性别", ""),
@@ -546,7 +651,7 @@ def character_from_zh(zh: dict) -> dict:
         "pack": zh.get("武将包", ""),
         "release_time": zh.get("武将上线时间", ""),
         "alliances": zh.get("珠联璧合", []),
-        "achievements": zh.get("战功", []),
+        "achievements": _ach_raw,
         "position": zh.get("定位", ""),
     }
     versions_en = {}
@@ -1005,12 +1110,12 @@ def is_timed_mode_character(data: dict, name: str) -> bool:
 
 
 def load_artwork_checkpoint() -> dict:
-    """加载原画下载检查点。
+    """加载原画下载检查点（点文件，运行时状态，非内容数据）。
 
-    artworks_checkpoint.json 格式：
+    .artworks_checkpoint.json 格式：
     {武将名: "ok" / "no_image" / "download_fail" / "page_fail" / "timed_mode" / "test_card"}
     """
-    checkpoint_path = os.path.join(OUTPUT_DIR, "artworks_checkpoint.json")
+    checkpoint_path = os.path.join(OUTPUT_DIR, ".artworks_checkpoint.json")
     if os.path.exists(checkpoint_path):
         try:
             with open(checkpoint_path, "r", encoding="utf-8") as f:
@@ -1021,11 +1126,140 @@ def load_artwork_checkpoint() -> dict:
 
 
 def save_artwork_checkpoint(checkpoint: dict):
-    """保存原画下载检查点。"""
-    checkpoint_path = os.path.join(OUTPUT_DIR, "artworks_checkpoint.json")
+    """保存原画下载检查点（点文件，运行时状态，非内容数据）。"""
+    checkpoint_path = os.path.join(OUTPUT_DIR, ".artworks_checkpoint.json")
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     with open(checkpoint_path, "w", encoding="utf-8") as f:
         json.dump(checkpoint, f, ensure_ascii=False, indent=2)
+
+
+# ============ JSON 空字段审计 ============
+
+
+def report_missing_fields(characters_zh: list[dict]):
+    """检查 characters.json 输出数据中各字段的缺失/空值情况，输出到命令行。"""
+    if not characters_zh:
+        print("[!] 没有武将数据可审计")
+        return
+
+    total = len(characters_zh)
+    print()
+    print("=" * 60)
+    print(f"JSON 空字段审计报告（共 {total} 个武将）")
+    print("=" * 60)
+
+    # ---- 顶层基础字段 ----
+    basic_fields = ["姓名", "性别", "势力", "名将堂", "别称", "称号", "武将包", "武将上线时间", "定位"]
+    missing_counts = {}
+    missing_details = {}
+    all_ok = True
+
+    for field in basic_fields:
+        empties = []
+        for c in characters_zh:
+            val = c.get(field, "")
+            name = c.get("姓名", "??")
+            if isinstance(val, str) and not val.strip():
+                empties.append(name)
+            elif val is None:
+                empties.append(name)
+        if empties:
+            all_ok = False
+            missing_counts[field] = len(empties)
+            missing_details[field] = empties[:20]  # 最多显示 20 个
+
+    for field in basic_fields:
+        if field in missing_counts:
+            detail_str = ""
+            names_sample = missing_details[field]
+            if len(names_sample) > 5:
+                detail_str = ", ".join(names_sample[:5]) + f" ...等共 {missing_counts[field]} 个"
+            else:
+                detail_str = ", ".join(names_sample)
+            print(f"  [!] {field} 缺失 {missing_counts[field]} 个：{detail_str}")
+        else:
+            print(f"  [OK] {field}：全部存在")
+
+    # ---- 珠联璧合（可为空数组，视为正常）----
+    alliances_empty = [c.get("姓名", "??") for c in characters_zh if not c.get("珠联璧合", [])]
+    if alliances_empty:
+        print(f"  [信息] 珠联璧合为空：{len(alliances_empty)} 个（可为空，只列前10）")
+        print(f"         例：{', '.join(alliances_empty[:10])}")
+    else:
+        print(f"  [OK] 珠联璧合：全部存在")
+
+    # ---- 战功（可为空数组，视为正常）----
+    achievements_empty = [c.get("姓名", "??") for c in characters_zh if not c.get("战功", [])]
+    if achievements_empty:
+        print(f"  [信息] 战功为空：{len(achievements_empty)} 个（可为空，只列前10）")
+        print(f"         例：{', '.join(achievements_empty[:10])}")
+    else:
+        print(f"  [OK] 战功：全部存在")
+
+    # ---- 版本信息 ----
+    no_versions = [c.get("姓名", "??") for c in characters_zh if not c.get("版本", {})]
+    if no_versions:
+        all_ok = False
+        print(f"  [!] 版本（无任何版本信息）：{len(no_versions)} 个")
+        for n in no_versions:
+            print(f"      - {n}")
+    else:
+        print(f"  [OK] 版本：全部存在")
+
+    # ---- 版本中各技能是否缺描述 / 缺台词 ----
+    skill_no_desc = []  # (name, version_label, skill_name)
+    skill_no_lines = []  # (name, version_label, skill_name)
+
+    for c in characters_zh:
+        name = c.get("姓名", "??")
+        versions = c.get("版本", {})
+        for vk, vv in versions.items():
+            skills = vv.get("技能", [])
+            lines = vv.get("武将台词", {})
+            for s in skills:
+                sname = s.get("name", "")
+                sdesc = s.get("description", "")
+                if not sdesc.strip():
+                    skill_no_desc.append((name, vk, sname))
+                # 检查该技能在 versions 的 lines dict 中是否有对应台词
+                if sname and sname not in lines:
+                    skill_no_lines.append((name, vk, sname))
+
+    if skill_no_desc:
+        all_ok = False
+        print(f"  [!] 技能缺描述：共 {len(skill_no_desc)} 条")
+        for item in skill_no_desc[:15]:
+            print(f"      {item[0]} [{item[1]}] 技能「{item[2]}」")
+        if len(skill_no_desc) > 15:
+            print(f"      ... 等共 {len(skill_no_desc)} 条")
+    else:
+        print(f"  [OK] 技能描述：全部存在")
+
+    if skill_no_lines:
+        all_ok = False
+        print(f"  [!] 技能缺台词：共 {len(skill_no_lines)} 条")
+        for item in skill_no_lines[:15]:
+            print(f"      {item[0]} [{item[1]}] 技能「{item[2]}」")
+        if len(skill_no_lines) > 15:
+            print(f"      ... 等共 {len(skill_no_lines)} 条")
+    else:
+        print(f"  [OK] 技能台词：全部存在")
+
+    # ---- 武将故事 ----
+    story_missing = [c.get("姓名", "??") for c in characters_zh if not c.get("武将故事", "").strip()]
+    if story_missing:
+        all_ok = False
+        print(f"  [!] 武将故事缺失：{len(story_missing)} 个（只列前20）")
+        print(f"      例：{', '.join(story_missing[:20])}")
+    else:
+        print(f"  [OK] 武将故事：全部存在")
+
+    print()
+    if all_ok:
+        print("[✓] 结论：所有字段均已完整爬取，无缺失。")
+    else:
+        print("[!] 结论：存在缺失字段，详情见上方统计。")
+    print("=" * 60)
 
 
 # ============ 主爬取循环 ============
@@ -1039,30 +1273,43 @@ def crawl(
     skip_existing: bool = True,
     resume: bool = True,
     crawl_artwork: bool = False,
-    export_pack_map: bool = False,
+    name: str = None,
 ):
     """主爬取函数
 
     Args:
         crawl_artwork: 是否额外爬取武将「经典形象」原画并下载到
             output/artworks/。默认 False（不影响既有行为）。
-        export_pack_map: 是否额外导出 pack_character_map.json
-            武将包映射文件。默认 False（按需生成）。
     """
 
     try:
 
             # ---- 1. 获取武将列表 ----
-        all_characters, index_html = extract_character_list()
-        if not all_characters:
-            print("[!] 没有获取到武将列表，退出")
-            return
+        if name:
+            # 指定武将模式：直接按名字拼 URL，绕过种子名单（用于补爬漏网的武将）
+            # 支持逗号分隔多个武将：--name 司马懿,姜维,庞统
+            # 强制覆盖同名武将：无论是否已存在，都重新爬取并用新数据替换旧条目
+            name_list = [n.strip() for n in name.split(",") if n.strip()]
+            name_set = set(name_list)
+            skip_existing = False
+            all_characters = [
+                {"name": n, "url": f"{BASE_URL}/{url_encode_chinese(n)}"}
+                for n in name_list
+            ]
+            index_html = ""
+            print(f"[*] 指定武将模式(强制覆盖): {len(name_list)} 个 -> {', '.join(name_list)}")
+        else:
+            all_characters, index_html = extract_character_list()
+            if not all_characters:
+                print("[!] 没有获取到武将列表，退出")
+                return
 
         # 提取武将包结构（顺序 + 图标）
-        pack_structure = extract_pack_structure(index_html)
+        pack_structure = extract_pack_structure(index_html) if index_html else {}
 
         # ---- 2. 处理筛选条件 ----
-        need_filter_after = bool(faction_filter or pack_filter)
+        # 指定武将模式下不做势力/包后筛选，避免把指定抓取的武将过滤掉
+        need_filter_after = bool(faction_filter or pack_filter) and not name
 
         if faction_filter:
             print(f"[*] 爬取后只保留势力'{faction_filter}'的武将")
@@ -1084,10 +1331,18 @@ def crawl(
         artwork_checkpoint_pre = load_artwork_checkpoint()
         timed_total = sum(1 for v in artwork_checkpoint_pre.values() if v == "timed_mode")
         test_total = sum(1 for v in artwork_checkpoint_pre.values() if v == "test_card")
-        characters = [
-            c for c in existing
-            if artwork_checkpoint_pre.get(c["name"]) not in ("timed_mode", "test_card")
-        ] if skip_existing else []
+        if name:
+            # 指定武将强制覆盖：保留其余武将数据，仅剔除这些武将的旧条目，稍后由新抓到的替换
+            characters = [
+                c for c in existing
+                if c["name"] not in name_set
+                and artwork_checkpoint_pre.get(c["name"]) not in ("timed_mode", "test_card")
+            ]
+        else:
+            characters = [
+                c for c in existing
+                if artwork_checkpoint_pre.get(c["name"]) not in ("timed_mode", "test_card")
+            ] if skip_existing else []
         existing_normal = len(characters)
 
         # 需要爬取的武将（排除检查点标记的限时玩法）
@@ -1170,6 +1425,12 @@ def crawl(
                 classic_story = fetch_classic_story_smw(name)
                 if classic_story:
                     data["classic_story"] = classic_story
+
+                # 获取战功描述（逐个战功详情页抓取信息框中的「战功描述」）
+                for ach in data.get("achievements", []):
+                    desc = fetch_achievement_description(ach["name"])
+                    if desc:
+                        ach["description"] = desc
 
                 characters.append(data)
                 success_count += 1
@@ -1381,8 +1642,13 @@ def crawl(
 
         save_checkpoint(characters)
 
-        # ---- 7. 生成武将包映射（按需） ----
-        if export_pack_map and pack_structure and characters:
+        # ---- 8. JSON 空字段审计（已禁用） ----
+        # if characters:
+        #     characters_zh = [character_to_zh(c) for c in characters]
+        #     report_missing_fields(characters_zh)
+
+        # ---- 7. 生成武将包映射（爬取结束时自动导出，与真源保持同步） ----
+        if pack_structure and characters:
             mapping = generate_pack_mapping(characters, pack_structure)
             save_pack_mapping(mapping, os.path.join(OUTPUT_DIR, "pack_character_map.json"))
 
@@ -1446,8 +1712,23 @@ def _flatten_config(data: dict) -> dict:
 
     output = data.get("output", {})
     if isinstance(output, dict):
-        if output.get("dir"):
-            flat["output"] = output["dir"]
+        dir_val = output.get("dir")
+        if dir_val:
+            if isinstance(dir_val, list):
+                # 多个路径，取第一个存在的
+                import os as _os
+                chosen = None
+                for p in dir_val:
+                    if _os.path.exists(p):
+                        chosen = p
+                        break
+                if chosen:
+                    flat["output"] = chosen
+                else:
+                    # 全都不存在，用第一个路径（后续 os.makedirs 会报错）
+                    flat["output"] = dir_val[0]
+            else:
+                flat["output"] = dir_val
         if output.get("save_every_n") is not None:
             flat["auto_save"] = output["save_every_n"]
 
@@ -1514,6 +1795,11 @@ def main(argv=None):
   # 从已有数据中筛选（不重新爬取）
   python sgs_bwiki_heros.py --query --faction 魏 --limit 5
 
+  # 指定武将补爬（强制覆盖同名武将，绕过种子名单，直接按名字拼 URL，结果合并进 characters.json）
+  # 支持逗号分隔一次补爬多个：--name 司马懿,姜维,庞统
+  python sgs_bwiki_heros.py --name 司马懿
+  python sgs_bwiki_heros.py --name 司马懿,姜维,庞统,夏侯惇,张郃
+
   # 输出到指定目录
   python sgs_bwiki_heros.py -o D:/sgs_data
         """,
@@ -1533,6 +1819,10 @@ def main(argv=None):
     )
     parser.add_argument(
         "--pack", type=str, default=None, help="按武将包筛选（如：标准-蜀汉虎将）"
+    )
+    parser.add_argument(
+        "--name", type=str, default=None,
+        help="指定武将模式：按名字直接爬取（强制覆盖同名武将、绕过种子名单），支持逗号分隔多个，如 --name 司马懿 或 --name 司马懿,姜维,庞统",
     )
     parser.add_argument(
         "--faction", type=str, default=None, help="按势力筛选（魏/蜀/吴/群/神）"
@@ -1585,11 +1875,6 @@ def main(argv=None):
         action="store_true",
         help="爬取武将「经典形象」原画并下载到 output/artworks/（默认关闭）",
     )
-    parser.add_argument(
-        "--export-pack-map",
-        action="store_true",
-        help="导出武将包映射文件 pack_character_map.json（默认不导出）",
-    )
     if yaml_defaults:
         parser.set_defaults(**yaml_defaults)
 
@@ -1605,6 +1890,11 @@ def main(argv=None):
     global OUTPUT_DIR
     if args.output:
         OUTPUT_DIR = os.path.abspath(args.output)
+        # 检查输出目录的父路径是否存在，避免因不存在的盘符导致难以理解的错误
+        if not os.path.exists(os.path.dirname(OUTPUT_DIR)):
+            print(f"错误: 输出目录的父路径不存在: {os.path.dirname(OUTPUT_DIR)}")
+            print(f"请检查 config.yaml 中 output.dir 的配置路径是否正确")
+            sys.exit(1)
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     if args.query:
@@ -1624,7 +1914,12 @@ def main(argv=None):
             version=args.version,
         )
         if filtered:
-            save_json(filtered, os.path.join(OUTPUT_DIR, "query_result.json"))
+            print(f"\n[*] 查询命中 {len(filtered)} 个武将：")
+            for c in filtered:
+                print("    -", c.get("name") or c.get("姓名", "?"))
+            # 空字段审计已禁用
+            # print("\n[*] 以下对查询结果进行空字段审计：")
+            # report_missing_fields([character_to_zh(c) for c in filtered])
         else:
             print("[!] 没有匹配的武将")
         return
@@ -1642,7 +1937,7 @@ def main(argv=None):
         skip_existing=not args.no_skip,
         resume=not args.no_resume,
         crawl_artwork=crawl_artwork_enabled,
-        export_pack_map=args.export_pack_map,
+        name=args.name,
     )
 
 

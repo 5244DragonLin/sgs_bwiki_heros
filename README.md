@@ -12,18 +12,14 @@
 
 ## ⭐亮点
 
-- **增量爬取**：checkpoint 机制记录已爬武将和页面 hash，再次运行只爬新武将
-- **多版本覆盖**：自动区分经典/界限突破/国战版本，分别提取技能和台词
+- **增量爬取与自动保存**：checkpoint 记录已爬武将与页面 hash，再次运行只爬新武将；每 N 个武将自动写盘，中断不丢数据
+- **多版本覆盖**：自动区分经典/界限突破/国战版本，分别提取技能与台词，每条台词绑定所属技能
 - **限时玩法过滤**：自动跳过自走棋/限时地主/喵喵杀等非常驻玩法区块，只保留常驻武将数据
-- **技能台词分离**：每条台词绑定所属技能，结构清晰
-- **珠联璧合**：国战武将的专属配对关系完整保留
-- **自动保存**：每 N 个武将自动写盘，中断不丢数据
-- **JSON 输出**：完整结构化 JSON + 武将包映射文件
-- **武将包映射**：自动生成 `pack_character_map.json`，按网站顺序列出所有武将包，包含大类和子包图标路径
-- **多参数筛选**：按武将包、势力、数量、版本自由组合查询
-- **经典形象原画爬取**：可选下载武将「经典形象」原画到 `output/artworks/{name}-经典形象.png`，并在数据中记录 `artwork` 相对路径（默认关闭）
-- **经典形象故事爬取**：通过 Semantic MediaWiki API 自动获取武将「经典形象故事」文本，存入 `classic_story` 字段（无需额外参数）
-- **仅查询模式**：爬完后的数据可离线筛选，无需重新请求网络
+- **战功（含描述）爬取**：`战功` 为对象数组 `[{"name": 名称, "description": 描述}]`，描述自动从战功详情页（`战功*{战功名}`）信息框提取，详情页缺失时自动跳过
+- **结构化 JSON 与武将包映射**：完整武将数据输出为 JSON，爬取结束自动生成 `pack_character_map.json`（按网站顺序列出所有武将包及图标路径）
+- **多参数筛选与查询**：按武将包/势力/版本/数量自由组合筛选；`--query` 模式离线复用已爬数据，无需重新请求网络
+- **经典形象原画与故事**：可选下载「经典形象」原画，并自动获取「经典形象故事」文本（Semantic MediaWiki API）
+- **珠联璧合**：国战武将专属配对关系完整保留
 
 ## 📸效果预览
 
@@ -46,12 +42,17 @@
 
 ```text
 output/
-├── characters.json              # 全部武将（JSON）
-├── pack_character_map.json      # 武将包与武将的映射（含图标路径）
+├── characters.json              # 全部武将（JSON）—— 唯一真源数据
+├── pack_character_map.json      # 武将包与武将的映射（爬取结束自动生成，派生索引）
 ├── artworks/                    # 经典形象原画（开启 --crawl-artwork 时）
 │   └── {name}-经典形象.png
-└── artworks_checkpoint.json     # 原画下载进度断点
+└── .artworks_checkpoint.json   # 原画下载进度断点（点文件，运行时状态，非内容数据）
 ```
+
+> 说明：`characters.json` 是唯一的真源数据。其余两个文件均为可自动重建的产物——
+> `pack_character_map.json` 每次爬取自动生成；`.artworks_checkpoint.json` 是原画下载的断点标记。
+> 早期版本还会输出 `query_result.json`，现已取消：查询模式（`--query`）直接读取
+> `characters.json` 并在控制台打印结果与空字段审计，不再落盘单独文件。
 
 ### JSON 示例（关羽·统一格式）
 
@@ -75,8 +76,8 @@ output/
       "武将包": "标准-蜀汉虎将",
       "武将上线时间": "开服",
       "珠联璧合": ["刘备", "张飞"],
-      "战功": ["战功*忠义果敢"],
-      "定位": "攻击",
+      "战功": [{"name": "忠义果敢", "description": "使用关羽在一局游戏中发动义绝至少4次。"}],
+      "定位": ["攻击"],
       "版本": {
         "经典": {
           "技能": [
@@ -165,7 +166,7 @@ python sgs_bwiki_heros.py
 ```
 python sgs_bwiki_heros.py [-o OUTPUT] [--pack PACK] [--faction FACTION]
                       [--limit LIMIT] [--auto-save N] [--no-skip] [--query]
-                      [--crawl-artwork] [--export-pack-map] [--version VER]
+                      [--crawl-artwork] [--version VER]
                       [--delay SEC] [--delay-jitter SEC] [--max-retries N]
                       [--timeout SEC]
 ```
@@ -188,7 +189,6 @@ python sgs_bwiki_heros.py [-o OUTPUT] [--pack PACK] [--faction FACTION]
 | `--no-skip` | 不跳过已爬取的武将（强制重新爬取） | 跳过 |
 | `--no-resume` | 不从检查点恢复 | 恢复 |
 | `--crawl-artwork` | 爬取武将「经典形象」原画并下载到 `output/artworks/`（也可在 config.yaml 设 `crawl_artwork: true`） | 关闭 |
-| `--export-pack-map` | 导出武将包映射到 `output/pack_character_map.json` | 关闭 |
 
 ### 网络参数
 
@@ -205,25 +205,31 @@ python sgs_bwiki_heros.py [-o OUTPUT] [--pack PACK] [--faction FACTION]
 |------|------|
 | `--query` | 仅查询已有数据，不重新发起网络请求 |
 
+配合 `--pack` / `--faction` / `--version` / `--limit` 等筛选参数使用。查询结果**直接打印到控制台**（先列出命中的武将名单，再输出空字段审计），不再落盘单独的 `query_result.json` 文件——`characters.json` 本身就是唯一真源数据。
+
+```bash
+# 从已爬取的 characters.json 中筛选魏势力前 5 个武将（不重新请求网络）
+python sgs_bwiki_heros.py --query --faction 魏 --limit 5
+
+# 组合筛选：国战版本 + 蜀势力
+python sgs_bwiki_heros.py --query --version national_war --faction 蜀
+```
+
 ## 📂项目结构
 
 ```text
 sgs_bwiki_heros/
 ├── sgs_bwiki_heros.py    # 主爬虫脚本
+├── sync_classic_artworks.py  # 同步经典形象原画/元数据到 BWIKI 素材目录（独立工具）
 ├── requirements.txt      # Python 依赖
 ├── config.example.yaml   # 示例配置文件（可选，复制为 config.yaml 使用）
 ├── LICENSE               # MIT 许可证
 ├── README.md             # 本文件
-├── tests/                # 单元测试与 fixtures
-│   ├── verify_skill_fix.py
-│   ├── verify_timed_mode_skip.py
-│   ├── verify_skip_log.py
-│   └── verify_artwork_crawl.py
 └── output/               # 爬取结果（git 忽略）
-    ├── characters.json
-    ├── pack_character_map.json  # 武将包与武将的映射（含图标路径）
+    ├── characters.json          # 全部武将（唯一真源数据）
+    ├── pack_character_map.json  # 武将包与武将的映射（爬取结束自动生成）
     ├── artworks/                # 经典形象原画（开启 --crawl-artwork 时）
-    ├── artworks_checkpoint.json # 原画下载进度断点
+    └── .artworks_checkpoint.json # 原画下载进度断点（点文件，运行时状态）
     └── checkpoint.json          # 爬取进度断点
 ```
 
@@ -254,12 +260,12 @@ sgs_bwiki_heros/
 
 用 `--query` 模式：`python sgs_bwiki_heros.py --query --faction 魏`。不需要重新请求网络。
 
-## 📝已知问题 / 待改进点（可选）
+## 📝已知问题 / 待改进点
 
 - [x] 限时玩法（自走棋 / 限时地主 / 喵喵杀）已显式跳过：非常驻玩法区块整体不入库，常驻武将数据集不再被污染
-- [ ] SP太史慈「击虚」孤立 section 配对问题：该技能位于自走棋之后的孤立区块，被版本配对逻辑丢弃，需补充 fixture 加固
 - [x] 经典形象原画爬取（`--crawl-artwork`）已验证通过：分阶段下载稳定，反爬污染已修复，进度条空列表不再显示
 - [x] 体验卡测试武将自动过滤：爬取和输出阶段均将「体验卡测试」标记的武将排除，数据集中不再包含未正式上线武将
+- [ ] SP太史慈「击虚」孤立 section 配对问题：该技能位于自走棋之后的孤立区块，被版本配对逻辑丢弃，需补充 fixture 加固
 
 ## 🤝贡献
 
@@ -268,6 +274,14 @@ sgs_bwiki_heros/
 贡献流程：Fork → 创建分支 → 提交代码 → 发起 Pull Request。
 
 ## 📋更新日志
+
+### v0.4
+
+- **新增：** 战功（含描述）爬取——爬取每个武将时，自动访问其战功详情页（`战功*{战功名}`，如 `战功*龙吟九霄`），解析信息框表格中的「战功描述」文本；`战功` 字段统一为对象数组 `[{"name": 名称, "description": 描述}]`（与「技能」字段风格一致，如 `{"name": "龙吟九霄", "description": "使用关平在自己的一回合中发动龙吟至少4次"}`）。详情页不存在（如部分野榜战功）时自动跳过，不影响入库。已对 `characters.json` 存量数据做回填补全
+- **优化：** 整合输出文件降低复杂度——原先目录里存在 4 个 JSON（`characters.json` / `query_result.json` / `pack_character_map.json` / `artworks_checkpoint.json`），实为「1 真源 + 1 过期副本 + 1 派生索引 + 1 运行时检查点」：取消 `query_result.json`，`--query` 改为直接读取 `characters.json` 并在控制台打印命中武将名单与空字段审计，不再落盘单独文件；`pack_character_map.json` 改为爬取结束自动生成（移除 `--export-pack-map` 参数），始终与真源同步；`artworks_checkpoint.json` 改名为 `.artworks_checkpoint.json`（点文件），明确其为原画下载的运行时断点
+- **修复：** 战功字段去除 wiki 链接标题自带的前缀 `战功*`——Bwiki 把战功做成名为 `战功*XXX` 的页面链接，原爬虫会原样保留；现在解析时自动剥离前缀，输出只保留战功名称（如 `战功*龙吟九霄` → `龙吟九霄`）。同步清洗了 `characters.json` 中的存量数据（全部 577 条战功名称均已去除前缀）
+- **修复：** 技能去重——Bwiki 用 `☆` / `★` 前缀标注「技能修改前的旧版」，与无前缀的当前版同名并存；解析时自动丢弃旧版、仅保留当前版（同名无前缀项），并将旧版台词并入当前版。若某技能仅有带标记的旧版（极少见），则保留并去除前缀，避免丢数据。同步清理了 `characters.json`（60+ 武将共 102 条旧版技能条目已移除）
+- **修复：** `定位` 字段由拼接字符串改为数组——wiki 页面中「定位」本是多个独立标签（如「控制」「攻击」各为一个 badge），原解析用 `get_text()` 把它们连成 `控制攻击` 丢失分隔；现改为逐个提取 badge 标签，`定位` 输出为数组 `["控制", "攻击"]`（顺序与 wiki 一致）。已对 `characters.json` 存量 645 武将做词表切分迁移，无数据丢失
 
 ### v0.3
 

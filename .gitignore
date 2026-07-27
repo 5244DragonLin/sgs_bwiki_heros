@@ -5,6 +5,8 @@ __pycache__/
 
 # Checkpoint / cache
 output/checkpoint.json
+output/
+!output/README.md
 
 # Environment
 .venv/

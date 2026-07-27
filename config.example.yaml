@@ -26,7 +26,13 @@ headers:
 
 # ---------- 输出配置 ----------
 output:
-  # 输出目录（相对于脚本所在目录）
+  # 输出目录，支持单个路径或列表（取第一个存在的路径）
+  # 单路径示例：
+  #   dir: "output"
+  # 多路径示例（从左到右检测，使用第一个存在的）：
+  #   dir:
+  #     - "E:/BaiduSyncdisk/工作/三国杀皮肤/heros"
+  #     - "D:/BaiduSyncdisk/工作/三国杀皮肤/heros"
   dir: "output"
   # 每爬取多少个武将自动保存一次
   save_every_n: 20
