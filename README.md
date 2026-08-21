@@ -20,6 +20,7 @@
 - **多参数筛选与查询**：按武将包/势力/版本/数量自由组合筛选；`--query` 模式离线复用已爬数据，无需重新请求网络
 - **经典形象原画与故事**：可选下载「经典形象」原画，并自动获取「经典形象故事」文本（Semantic MediaWiki API）
 - **珠联璧合**：国战武将专属配对关系完整保留
+- **经典形象同步工具**：`sync_classic_artworks.py` 将经典形象原画和元数据同步到 `sgs-skin-gallery` 的 BWIKI 素材目录，运行 `python sync_classic_artworks.py --execute` 即可，画廊无需额外配置
 
 ## 📸效果预览
 
@@ -215,6 +216,39 @@ python sgs_bwiki_heros.py --query --faction 魏 --limit 5
 python sgs_bwiki_heros.py --query --version national_war --faction 蜀
 ```
 
+## 🔄经典形象同步工具
+
+`sync_classic_artworks.py` 将经典形象原画和元数据同步到 `sgs-skin-gallery` 的 BWIKI 素材目录，用于补充 [sgs_bwiki_skins](https://github.com/5244DragonLin/sgs_bwiki_skins) 项目中缺失的部分武将原画数据。
+
+### 使用方式
+
+```bash
+# 预览模式（查看需要同步的文件，不实际执行）
+python sync_classic_artworks.py
+
+# 执行同步
+python sync_classic_artworks.py --execute
+```
+
+### 预览输出示例
+
+```text
+[*] 需要复制图片: 43 个
+  BWIKI/魏/（8 个）: 何晏、司马懿、夏侯令女、夏侯惇、夏侯渊、张郃、戏志才、文钦
+  ...
+
+[*] 需要补充 metadata 条目: 43 个
+```
+
+### 同步后
+
+在 `sgs-skin-gallery` 项目下重新生成数据即可看到新增的经典形象：
+
+```bash
+cd ../sgs-skin-gallery
+npm run scan
+```
+
 ## 📂项目结构
 
 ```text
@@ -274,6 +308,11 @@ sgs_bwiki_heros/
 贡献流程：Fork → 创建分支 → 提交代码 → 发起 Pull Request。
 
 ## 📋更新日志
+
+### v0.4.1
+
+- **优化：** 完善 README，新增经典形象同步工具的使用说明，更易读
+- **优化：** `sync_classic_artworks.py` 预览模式输出改为按势力一行展示，用顿号分隔武将名，更紧凑
 
 ### v0.4
 

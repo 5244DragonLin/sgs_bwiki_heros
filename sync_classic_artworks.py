@@ -282,9 +282,9 @@ def main():
     print(f"[*] 需要复制图片: {len(to_copy)} 个")
     if to_copy:
         for f in FACTION_DIRS:
-            count = sum(1 for _, _, fac in to_copy if fac == f)
-            if count > 0:
-                print(f"      BWIKI/{f}/: {count} 个")
+            names = [name for fname, name, fac in to_copy if fac == f]
+            if names:
+                print(f"      BWIKI/{f}/（{len(names)} 个）: {"、".join(sorted(names))}")
 
     print()
     print(f"[*] 需要补充 metadata 条目: {len(to_meta)} 个")
